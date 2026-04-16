@@ -902,62 +902,58 @@ void drawHud(const grid::GlobalState& state) {
     if (!state.match_started) {
         const float cx = state.map.width() * 0.5f;
 
-        // Οδηγίες setup (μπλοκ πάνω-αριστερά). Κρατάμε το κείμενο ευανάγνωστο και αποφεύγουμε υπερβολικά μεγάλες γραμμές.
-        std::string line_time_keys = "Time:  [1]=60s  [2]=90s  [3]=120s";
-        std::string line_actions = "[ENTER] Start   |   [R] Restart   |   [SPACE] Pause";
-        std::string line_controls_1 = "P1: WASD   |   P2: Arrows";
-        std::string line_controls_2;
-        std::string line_controls_3 = "[N] Step 1 tick   |   [-]/[+] Speed";
-        std::string line_map_keys = "[M] Next map";
+        // 5 καθαρές γραμμές — κάθε γραμμή έχει ένα θέμα, πιο ευανάγνωστο.
+        const std::string line_duration = "Duration:   [1] 60s     [2] 90s     [3] 120s";
+        const std::string line_actions  = "[ENTER] Start   [R] Restart   [SPACE] Pause";
+        const std::string line_players  = "P1: WASD   |   P2: Arrow Keys   |   [N] Step   [-/+] Speed";
+        std::string line_settings;
         if (state.cpu_agent_id >= 0) {
-            line_controls_2 = std::string("CPU: Auto (") + cpuDifficultyName(state) + ")   |   [C] CPU diff";
+            line_settings = std::string("CPU: Auto  [C] Difficulty (") + cpuDifficultyName(state) + ")   [M] Next Map";
+        } else {
+            line_settings = "[M] Next Map";
         }
-        const std::string line_time_selected = "Selected: " + std::to_string(state.match_duration_sec) + "s | Map: " + currentDemoMapName();
+        const std::string line_status = ">  " + std::to_string(state.match_duration_sec) + "s   |   Map: " + currentDemoMapName();
 
         const float kPanelTextX = 0.90f;
-        // Κάθετη διάταξη ρυθμισμένη ώστε ο τίτλος να «κάθεται» μέσα στο panel.
-        const float kHeaderY = 1.05f;
-        const float kLineY0 = 1.62f;
-        const float kLineDY = 0.54f;
-        const float kTextSize = 0.68f;
-        const float kTextSizeEmph = 0.78f;
+        const float kHeaderY    = 0.55f;   // τίτλος «SETUP» πιο ψηλά
+        const float kLineY0     = 1.28f;   // πρώτη γραμμή περιεχομένου
+        const float kLineDY     = 0.66f;   // αραιότερο line-spacing για αναπνοή
+        const float kTextSize     = 0.72f;
+        const float kTextSizeEmph = 0.80f;
 
-        // Αριστερό panel οδηγιών (πιο ευανάγνωστο από «σκέτο» κείμενο πάνω στη λωρίδα).
+        // Panel: υπολογίζουμε πλάτος από το μακρύτερο κείμενο.
         {
             float max_text_w = 0.0f;
             max_text_w = std::max(max_text_w, approxTextHalfWidth("SETUP", 0.92f) * 2.0f);
-            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_time_keys, kTextSize) * 2.0f);
-            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_actions, kTextSize) * 2.0f);
-            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_controls_1, kTextSize) * 2.0f);
-            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_controls_3, kTextSize) * 2.0f);
-            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_map_keys, kTextSize) * 2.0f);
-            if (!line_controls_2.empty()) {
-                max_text_w = std::max(max_text_w, approxTextHalfWidth(line_controls_2, kTextSize) * 2.0f);
-            }
-            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_time_selected, kTextSizeEmph) * 2.0f);
+            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_duration, kTextSize) * 2.0f);
+            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_actions,  kTextSize) * 2.0f);
+            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_players,  kTextSize) * 2.0f);
+            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_settings, kTextSize) * 2.0f);
+            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_status,   kTextSizeEmph) * 2.0f);
 
-            const float padding = 1.30f;
+            const float padding  = 1.30f;
             float panel_w = max_text_w + padding;
-            panel_w = std::min(panel_w, std::max(14.0f, state.map.width() * 0.48f));
+            panel_w = std::min(panel_w, std::max(14.0f, state.map.width() * 0.52f));
             panel_w = std::min(panel_w, state.map.width() - 1.0f);
-            const float panel_h = 3.85f;
+            // 5 γραμμές × 0.66 + margins → ύψος ~5.0 καλύπτει τα πάντα άνετα
+            const float panel_h  = 5.00f;
             const float panel_left = 0.55f;
             const float panel_cx = panel_left + panel_w * 0.5f;
-            const float panel_cy = 2.05f;
+            const float panel_cy = 3.05f;   // κεντράρουμε μεσαία στη HUD ζώνη
 
             graphics::Brush panel;
             panel.fill_color[0] = 0.0f;
             panel.fill_color[1] = 0.0f;
             panel.fill_color[2] = 0.0f;
-            panel.fill_opacity = 0.40f;
+            panel.fill_opacity = 0.45f;
             panel.outline_color[0] = 1.0f;
             panel.outline_color[1] = 1.0f;
             panel.outline_color[2] = 1.0f;
-            panel.outline_opacity = 0.18f;
+            panel.outline_opacity = 0.22f;
             panel.outline_width = 0.06f;
             graphics::drawRect(panel_cx, panel_cy, panel_w, panel_h, panel);
 
-            // Μπάρα «accent» στην αριστερή πλευρά.
+            // Accent bar στα αριστερά.
             graphics::Brush bar;
             bar.fill_color[0] = 1.0f;
             bar.fill_color[1] = 0.85f;
@@ -988,39 +984,33 @@ void drawHud(const grid::GlobalState& state) {
         ui_text.fill_opacity = 1.0f;
         ui_text.outline_opacity = 0.0f;
 
+        // Τίτλος "GRID WORLD" κεντραρισμένος στη HUD ζώνη.
         if (!g_font_display.empty()) {
             graphics::setFont(g_font_display);
         }
-        
         const std::string title = "GRID WORLD";
-        graphics::drawText(std::max(0.6f, cx - approxTextHalfWidth(title, 1.05f)), 2.10f, 1.05f, title, text);
+        graphics::drawText(std::max(0.6f, cx - approxTextHalfWidth(title, 1.05f)), 2.90f, 1.05f, title, text);
         if (!g_font_ui.empty()) {
             graphics::setFont(g_font_ui);
         }
 
+        // Header «SETUP» μέσα στο panel.
         {
-            const float s = 0.92f;
             if (!g_font_display.empty()) {
                 graphics::setFont(g_font_display);
             }
-            drawTextShadowed(kPanelTextX, kHeaderY, s, "SETUP", accent, shadow, 0.06f, 0.06f);
+            drawTextShadowed(kPanelTextX, kHeaderY, 0.92f, "SETUP", accent, shadow, 0.06f, 0.06f);
             if (!g_font_ui.empty()) {
                 graphics::setFont(g_font_ui);
             }
         }
 
-        drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 0.0f, kTextSize, line_time_keys, ui_text, accent, shadow);
-        drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 1.0f, kTextSize, line_actions, ui_text, accent, shadow);
-        drawTextShadowed(kPanelTextX, kLineY0 + kLineDY * 2.0f, kTextSize, line_controls_1, ui_text, shadow);
-        drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 3.0f, kTextSize, line_controls_3, ui_text, accent, shadow);
-        if (!line_controls_2.empty()) {
-            drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 4.0f, kTextSize, line_controls_2, ui_text, accent, shadow);
-            drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 5.0f, kTextSize, line_map_keys, ui_text, accent, shadow);
-            drawTextShadowed(kPanelTextX, kLineY0 + kLineDY * 6.0f, kTextSizeEmph, line_time_selected, ui_text, shadow);
-        } else {
-            drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 4.0f, kTextSize, line_map_keys, ui_text, accent, shadow);
-            drawTextShadowed(kPanelTextX, kLineY0 + kLineDY * 5.0f, kTextSizeEmph, line_time_selected, ui_text, shadow);
-        }
+        // 5 γραμμές περιεχομένου με σαφή θέματα.
+        drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 0.0f, kTextSize,     line_duration, ui_text, accent, shadow);
+        drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 1.0f, kTextSize,     line_actions,  ui_text, accent, shadow);
+        drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 2.0f, kTextSize,     line_players,  ui_text, accent, shadow);
+        drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 3.0f, kTextSize,     line_settings, ui_text, accent, shadow);
+        drawTextShadowed (kPanelTextX, kLineY0 + kLineDY * 4.0f, kTextSizeEmph, line_status,   ui_text, shadow);
         return;
     }
 
@@ -1366,6 +1356,7 @@ void restartToSetup(grid::GlobalState& state) {
     state.match_over = false;
     state.paused = true;
     state.step_once = false;
+    state.step_skip_cpu = false;
     state.accumulator_ms = 0.0f;
     state.sim_elapsed_ms = 0.0f;
     state.hud_last_expanded = 0;
@@ -1480,6 +1471,7 @@ void update_callback(float ms) {
     const bool cur_n = graphics::getKeyState(graphics::SCANCODE_N);
     if (cur_n && !prev_n) {
         state->step_once = true;
+        state->step_skip_cpu = true;  // παίκτες κινούνται, CPU agent παραλείπεται
     }
 
     // Cycle δυσκολίας CPU (έχει νόημα μόνο αν υπάρχει CPU agent).
@@ -1651,8 +1643,8 @@ void update_callback(float ms) {
     prev_kp3 = cur_kp3;
     prev_m = cur_m;
 
-    // Χρονόμετρο match
-    if (!state->match_over) {
+    // Χρονόμετρο match — σταματά όταν το game είναι paused
+    if (!state->match_over && !state->paused) {
         state->match_time_left_ms = std::max(0.0f, state->match_time_left_ms - ms);
 
         // Beeps για countdown 3-2-1 (μία φορά ανά δευτερόλεπτο)
@@ -1849,6 +1841,12 @@ void update_callback(float ms) {
             for (auto* ae : agents) {
                 if (!ae->wantsStep()) continue;
 
+                // [N] step mode: παίκτες κινούνται, CPU agent παραλείπεται
+                if (state->step_skip_cpu && ae->id() == state->cpu_agent_id) {
+                    ae->commitStepBlocked();
+                    continue;
+                }
+
                 const grid::Point next = ae->intendedCell();
                 const int nk = key(next);
 
@@ -1870,6 +1868,7 @@ void update_callback(float ms) {
 
         if (state->step_once) {
             state->step_once = false;
+            state->step_skip_cpu = false;
             break;
         }
     }

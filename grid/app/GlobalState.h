@@ -27,6 +27,8 @@ struct GlobalState {
     // Βασικά χειριστήρια
     bool paused = false;
     bool step_once = false;
+    // Αν true: στο επόμενο step_once tick ο CPU agent παραλείπεται (παίκτες κινούνται, agent όχι)
+    bool step_skip_cpu = false;
 
     // Επιλογή από UI
     int selected_agent_id = -1;
