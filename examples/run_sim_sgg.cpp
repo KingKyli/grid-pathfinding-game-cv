@@ -1,6 +1,7 @@
 #include <sgg/graphics.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cmath>
 #include <filesystem>
@@ -22,7 +23,7 @@
 namespace {
 
 // Ο καμβάς επεκτείνεται για να χωρέσει μια λωρίδα πληροφοριών πάνω από το πλέγμα.
-constexpr float kHudHeight = 4.0f;
+constexpr float kHudHeight = 5.6f;
 
 // Η βιβλιοθήκη γραφικών έχει μία «ενεργή» γραμματοσειρά συνολικά. Κρατάμε μια ευανάγνωστη γραμματοσειρά διεπαφής.
 static std::string g_font_ui;
@@ -509,7 +510,18 @@ public:
                 int probed = 0;
                 for (const auto* te : targets) {
                     if (probed++ >= kMaxProbe) break;
-                    const auto p = grid::findPath(state.map, agent_.position(), te->cell());
+                    int expanded = 0;
+                    const auto t0 = std::chrono::high_resolution_clock::now();
+                    const auto p = grid::findPath(state.map, agent_.position(), te->cell(),
+                        [&](const grid::Point&, const std::string& phase) {
+                            if (phase == "closed") ++expanded;
+                        });
+                    const auto t1 = std::chrono::high_resolution_clock::now();
+                    state.hud_last_expanded = expanded;
+                    state.hud_last_path_len = p ? static_cast<int>(p->size()) : 0;
+                    state.hud_last_search_ms =
+                        std::chrono::duration<float, std::milli>(t1 - t0).count();
+                    state.hud_search_calls += 1;
                     if (!p) continue;
 
                     setGoalPoint(te->cell());
@@ -545,7 +557,18 @@ public:
         }
 
         if (need_repath) {
-            const auto p = grid::findPath(state.map, agent_.position(), agent_.goalPoint());
+            int expanded = 0;
+            const auto t0 = std::chrono::high_resolution_clock::now();
+            const auto p = grid::findPath(state.map, agent_.position(), agent_.goalPoint(),
+                [&](const grid::Point&, const std::string& phase) {
+                    if (phase == "closed") ++expanded;
+                });
+            const auto t1 = std::chrono::high_resolution_clock::now();
+            state.hud_last_expanded = expanded;
+            state.hud_last_path_len = p ? static_cast<int>(p->size()) : 0;
+            state.hud_last_search_ms =
+                std::chrono::duration<float, std::milli>(t1 - t0).count();
+            state.hud_search_calls += 1;
             if (p) {
                 agent_.setPath(*p);
                 repath_cooldown_ms_ = 200.0f;
@@ -873,7 +896,7 @@ void drawHud(const grid::GlobalState& state) {
         std::string line_actions = "[ENTER] Start   |   [R] Restart   |   [SPACE] Pause";
         std::string line_controls_1 = "P1: WASD   |   P2: Arrows";
         std::string line_controls_2;
-        std::string line_controls_3 = "[N] Step   |   [-]/[+] Speed";
+        std::string line_controls_3 = "[N] Step 1 tick   |   [-]/[+] Speed";
         if (state.cpu_agent_id >= 0) {
             line_controls_2 = std::string("CPU: Auto (") + cpuDifficultyName(state) + ")   |   [C] CPU diff";
         }
@@ -1046,6 +1069,8 @@ void drawHud(const grid::GlobalState& state) {
     {
         std::string line1 = (state.paused ? "PAUSE" : "RUN");
         line1 += " | " + std::to_string(state.tick_delay_ms) + "ms";
+        line1 += " | FPS " + std::to_string(static_cast<int>(std::round(state.hud_fps)));
+        line1 += " | t " + std::to_string(static_cast<int>(state.sim_elapsed_ms / 1000.0f)) + "s";
         if (state.targets_total > 0) {
             line1 += " | T " + std::to_string(state.targets_collected);
         }
@@ -1067,12 +1092,15 @@ void drawHud(const grid::GlobalState& state) {
         } else {
             line2 = "Sel none";
         }
+        line2 += " | A*: E=" + std::to_string(state.hud_last_expanded);
+        line2 += " P=" + std::to_string(state.hud_last_path_len);
+        line2 += " " + std::to_string(static_cast<int>(std::round(state.hud_last_search_ms))) + "ms";
         graphics::drawText(0.6f, 1.75f, kFontSub, line2, text);
     }
 
     // Γραμμή 3: οδηγός κουμπιών gameplay στη μπάρα HUD.
     {
-        std::string line3 = "[SPACE] Pause/Run  |  [N] Step  |  [-]/[+] Speed  |  [P] AP  |  [R] Restart  |  [Q] Quit";
+        std::string line3 = "[SPACE] Pause/Run  |  [N] Step 1 tick  |  [-]/[+] Speed  |  [P] AP  |  [R] Restart  |  [Q] Quit";
         if (state.cpu_agent_id >= 0) {
             line3 += "  |  [C] CPU";
         }
@@ -1324,6 +1352,11 @@ void restartToSetup(grid::GlobalState& state) {
     state.paused = true;
     state.step_once = false;
     state.accumulator_ms = 0.0f;
+    state.sim_elapsed_ms = 0.0f;
+    state.hud_last_expanded = 0;
+    state.hud_last_path_len = 0;
+    state.hud_last_search_ms = 0.0f;
+    state.hud_search_calls = 0;
     state.match_time_left_ms = static_cast<float>(state.match_duration_sec) * 1000.0f;
     state.targets_collected = 0;
 
@@ -1354,6 +1387,17 @@ void draw_callback() {
 void update_callback(float ms) {
     auto* state = static_cast<grid::GlobalState*>(graphics::getUserData());
     if (!state) return;
+
+    // Smoothed FPS estimate για HUD.
+    {
+        static float fps_smoothed = 0.0f;
+        if (ms > 0.001f) {
+            const float inst = 1000.0f / ms;
+            if (fps_smoothed <= 0.0f) fps_smoothed = inst;
+            else fps_smoothed = fps_smoothed * 0.90f + inst * 0.10f;
+            state->hud_fps = fps_smoothed;
+        }
+    }
 
     // Ανίχνευση «ακμής» πλήκτρων ( για toggles.
     static bool prev_space = false;
@@ -1727,6 +1771,8 @@ void update_callback(float ms) {
     state->accumulator_ms += ms;
     while (state->accumulator_ms >= static_cast<float>(state->tick_delay_ms)) {
         if (state->paused && !state->step_once) break;
+
+        state->sim_elapsed_ms += static_cast<float>(state->tick_delay_ms);
 
         state->update(static_cast<float>(state->tick_delay_ms));
 

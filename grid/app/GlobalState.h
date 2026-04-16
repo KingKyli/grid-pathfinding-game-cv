@@ -16,6 +16,14 @@ struct GlobalState {
     int tick_delay_ms = 150;
     float accumulator_ms = 0.0f;
 
+    // HUD / profiling στοιχεία runtime
+    float sim_elapsed_ms = 0.0f;
+    float hud_fps = 0.0f;
+    int hud_last_expanded = 0;
+    int hud_last_path_len = 0;
+    float hud_last_search_ms = 0.0f;
+    int hud_search_calls = 0;
+
     // Βασικά χειριστήρια
     bool paused = false;
     bool step_once = false;
