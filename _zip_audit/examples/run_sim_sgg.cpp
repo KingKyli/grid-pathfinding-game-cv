@@ -1,0 +1,1860 @@
+#include <sgg/graphics.h>
+
+#include <algorithm>
+#include <cstdint>
+#include <cmath>
+#include <filesystem>
+#include <iostream>
+#include <fstream>
+#include <iterator>
+#include <memory>
+#include <random>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include "../grid/app/GlobalState.h"
+#include "../grid/core/Agent.h"
+#include "../grid/core/Map.h"
+#include "../grid/pathfinding/AStar.h"
+
+namespace {
+
+// Ο καμβάς επεκτείνεται για να χωρέσει μια λωρίδα πληροφοριών πάνω από το πλέγμα.
+constexpr float kHudHeight = 4.0f;
+
+// Η βιβλιοθήκη γραφικών έχει μία «ενεργή» γραμματοσειρά συνολικά. Κρατάμε μια ευανάγνωστη γραμματοσειρά διεπαφής.
+static std::string g_font_ui;
+static std::string g_font_display;
+static std::string g_obstacle_texture;
+
+// Για να βρίσκουμε πόρους ακόμη κι όταν ο τρέχων φάκελος εργασίας δεν είναι η ρίζα του έργου.
+static std::filesystem::path g_exe_dir;
+
+static std::string g_sfx_countdown;
+static std::string g_sfx_end;
+static std::string g_sfx_winner;
+
+std::string resolveSggHitSoundPath() {
+    static std::string cached;
+    if (!cached.empty()) return cached;
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    std::vector<fs::path> bases;
+    bases.push_back(fs::current_path(ec));
+    if (!g_exe_dir.empty()) {
+        bases.push_back(g_exe_dir);
+        bases.push_back(g_exe_dir.parent_path());
+        bases.push_back(g_exe_dir.parent_path().parent_path());
+        bases.push_back(g_exe_dir.parent_path().parent_path().parent_path());
+    }
+    if (!bases.empty() && !bases.front().empty()) {
+        const fs::path cwd = bases.front();
+        bases.push_back(cwd.parent_path());
+        bases.push_back(cwd.parent_path().parent_path());
+        bases.push_back(cwd.parent_path().parent_path().parent_path());
+    }
+
+    // Αφαίρεση διπλοεγγραφών.
+    std::sort(bases.begin(), bases.end());
+    bases.erase(std::unique(bases.begin(), bases.end()), bases.end());
+
+    const fs::path rel1 = fs::path("sgg-main") / "assets" / "hit1.wav";
+    const fs::path rel2 = fs::path("sgg-main") / "3rdparty" / "assets" / "hit1.wav";
+
+    for (const auto& base : bases) {
+        if (base.empty()) continue;
+        for (const auto& rel : {rel1, rel2}) {
+            const fs::path p = base / rel;
+            if (fs::exists(p, ec) && !ec) {
+                cached = fs::absolute(p, ec).string();
+                if (ec) cached = p.string();
+                return cached;
+            }
+        }
+    }
+
+    return cached;
+}
+
+void logAudioEvent(const std::string& msg) {
+    // Μικρή καταγραφή αποσφαλμάτωσης για τον ήχο (βοηθάει όταν "δεν ακούγεται τίποτα").
+    // Γράφει δίπλα στον τρέχοντα φάκελο εργασίας (συνήθως τη ρίζα του έργου).
+    std::ofstream out("audio_debug.txt", std::ios::app);
+    if (!out) return;
+    out << msg << "\n";
+}
+
+int clampCpuDifficulty(int v) {
+    return std::clamp(v, 0, 2);
+}
+
+const char* cpuDifficultyName(const grid::GlobalState& state) {
+    switch (clampCpuDifficulty(state.cpu_difficulty)) {
+    case 0: return "EASY";
+    case 2: return "HARD";
+    default: return "NORMAL";
+    }
+}
+
+float cpuStepThrottleMs(const grid::GlobalState& state) {
+    switch (clampCpuDifficulty(state.cpu_difficulty)) {
+    case 0: return 360.0f; // εύκολο: αργά
+    case 2: return 180.0f; // δύσκολο: πιο γρήγορα
+    default: return 260.0f; // κανονικό: γρήγορα
+    }
+}
+
+int cpuProbeLimit(const grid::GlobalState& state) {
+    switch (clampCpuDifficulty(state.cpu_difficulty)) {
+    case 0: return 10;
+    case 2: return 45;
+    default: return 25;
+    }
+}
+
+void cycleCpuDifficulty(grid::GlobalState& state) {
+    state.cpu_difficulty = clampCpuDifficulty(state.cpu_difficulty);
+    state.cpu_difficulty = (state.cpu_difficulty + 1) % 3;
+}
+
+static std::string formatTimeMMSS(int total_seconds) {
+    total_seconds = std::max(0, total_seconds);
+    const int mm = total_seconds / 60;
+    const int ss = total_seconds % 60;
+    std::string out;
+    out += std::to_string(mm);
+    out += ":";
+    if (ss < 10) out += "0";
+    out += std::to_string(ss);
+    return out;
+}
+
+std::string resolveClickSoundPath() {
+    static std::string cached;
+    if (!cached.empty()) return cached;
+
+    namespace fs = std::filesystem;
+    const fs::path cwd = fs::current_path();
+    const char* candidates[] = {
+       
+        "assets/click.wav",
+        "assets/hit1.wav",
+        "../assets/click.wav",
+        "../assets/hit1.wav",
+
+        "sgg-main/assets/hit1.wav",
+        "../sgg-main/assets/hit1.wav",
+        "../../sgg-main/assets/hit1.wav",
+        "../../../sgg-main/assets/hit1.wav",
+        "sgg-main/3rdparty/assets/hit1.wav",
+        "../sgg-main/3rdparty/assets/hit1.wav",
+        "../../sgg-main/3rdparty/assets/hit1.wav",
+        "../../../sgg-main/3rdparty/assets/hit1.wav",
+    };
+
+    for (const char* rel : candidates) {
+        std::error_code ec;
+        if (fs::exists(rel, ec) && !ec) {
+            cached = fs::absolute(fs::path(rel), ec).string();
+            if (ec) cached = rel;
+            return cached;
+        }
+    }
+    return cached;
+}
+
+std::string resolveCollectSoundPath() {
+    static std::string cached;
+    if (!cached.empty()) return cached;
+
+    namespace fs = std::filesystem;
+    const fs::path cwd = fs::current_path();
+
+ 
+    const char* candidates[] = {
+        "assets/hit1.wav",
+        "assets/click.wav",
+        "../assets/hit1.wav",
+        "../assets/click.wav",
+        "sgg-main/assets/hit1.wav",
+        "../sgg-main/assets/hit1.wav",
+        "sgg-main/3rdparty/assets/hit1.wav",
+        "../sgg-main/3rdparty/assets/hit1.wav",
+    };
+
+    for (const char* rel : candidates) {
+        fs::path p = cwd / rel;
+        std::error_code ec;
+        if (fs::exists(p, ec)) {
+            cached = p.lexically_normal().string();
+            break;
+        }
+    }
+
+    return cached;
+}
+
+std::string resolveCountdownSoundPath() {
+    return resolveSggHitSoundPath();
+}
+
+std::string resolveEndSoundPath() {
+    return resolveSggHitSoundPath();
+}
+
+std::string resolveWinnerSoundPath() {
+    return resolveSggHitSoundPath();
+}
+
+std::string resolveFontPath() {
+    namespace fs = std::filesystem;
+
+    const fs::path cwd = fs::current_path();
+
+    const std::vector<fs::path> candidates = {
+        fs::path("C:/Windows/Fonts/bahnschrift.ttf"),
+        fs::path("C:/Windows/Fonts/segoeui.ttf"),
+        fs::path("C:/Windows/Fonts/arial.ttf"),
+
+      
+        cwd / "sgg-main" / "assets" / "orange juice 2.0.ttf",
+        cwd / "sgg-main" / "3rdparty" / "assets" / "orange juice 2.0.ttf",
+        cwd / "assets" / "orange juice 2.0.ttf",
+    };
+
+    for (const auto& p : candidates) {
+        std::error_code ec;
+        if (fs::exists(p, ec) && !ec) {
+            return p.string();
+        }
+    }
+    return {};
+}
+
+std::string resolveDisplayFontPath() {
+    namespace fs = std::filesystem;
+
+    const fs::path cwd = fs::current_path();
+    const std::vector<fs::path> candidates = {
+        cwd / "sgg-main" / "assets" / "orange juice 2.0.ttf",
+        cwd / "sgg-main" / "3rdparty" / "assets" / "orange juice 2.0.ttf",
+        cwd / "assets" / "orange juice 2.0.ttf",
+    };
+
+    for (const auto& p : candidates) {
+        std::error_code ec;
+        if (fs::exists(p, ec) && !ec) {
+            return p.string();
+        }
+    }
+    return {};
+}
+
+std::string resolveObstacleTexturePath() {
+    static std::string cached;
+    if (!cached.empty()) return cached;
+
+    namespace fs = std::filesystem;
+    const fs::path cwd = fs::current_path();
+    const std::vector<fs::path> candidates = {
+        cwd / "assets" / "iron.png",
+        cwd / "sgg-main" / "assets" / "iron.png",
+        cwd / "sgg-main" / "3rdparty" / "assets" / "iron.png",
+        cwd / "../assets" / "iron.png",
+        cwd / "../sgg-main" / "assets" / "iron.png",
+    };
+
+    for (const auto& p : candidates) {
+        std::error_code ec;
+        if (fs::exists(p, ec) && !ec) {
+            cached = p.string();
+            return cached;
+        }
+    }
+    return cached;
+}
+
+static int manhattan(const grid::Point& a, const grid::Point& b) {
+    return std::abs(a.x - b.x) + std::abs(a.y - b.y);
+}
+
+void agentColor(int agent_id, float out_rgb[3]) {
+    
+    switch (agent_id % 6) {
+    case 0: // κόκκινο
+        out_rgb[0] = 0.90f;
+        out_rgb[1] = 0.20f;
+        out_rgb[2] = 0.20f;
+        break;
+    case 1: // κυανό
+        out_rgb[0] = 0.20f;
+        out_rgb[1] = 0.80f;
+        out_rgb[2] = 0.95f;
+        break;
+    case 2: // πράσινο
+        out_rgb[0] = 0.25f;
+        out_rgb[1] = 0.90f;
+        out_rgb[2] = 0.35f;
+        break;
+    case 3: // πορτοκαλί
+        out_rgb[0] = 0.95f;
+        out_rgb[1] = 0.55f;
+        out_rgb[2] = 0.15f;
+        break;
+    case 4: // μωβ
+        out_rgb[0] = 0.72f;
+        out_rgb[1] = 0.35f;
+        out_rgb[2] = 0.95f;
+        break;
+    default: // κίτρινο
+        out_rgb[0] = 0.95f;
+        out_rgb[1] = 0.85f;
+        out_rgb[2] = 0.20f;
+        break;
+    }
+}
+
+class TargetEntity final : public grid::Entity {
+public:
+    explicit TargetEntity(grid::Point cell) : cell_(cell) {}
+
+    const grid::Point& cell() const { return cell_; }
+
+    bool update(grid::GlobalState&, float) override { return true; }
+
+    void draw(const grid::GlobalState&) const override {
+        graphics::Brush t;
+        t.fill_color[0] = 0.95f;
+        t.fill_color[1] = 0.85f;
+        t.fill_color[2] = 0.20f;
+        t.fill_opacity = 0.85f;
+        t.outline_opacity = 0.0f;
+
+        graphics::drawDisk(cell_.x + 0.5f, cell_.y + 0.5f + kHudHeight, 0.22f, t);
+    }
+
+private:
+    grid::Point cell_{0, 0};
+};
+
+std::optional<grid::Path> bfsPathToNearestTarget(const grid::Map& map, const grid::Point& start, const std::vector<const TargetEntity*>& targets) {
+    if (targets.empty()) return std::nullopt;
+    if (!map.isFree(start)) return std::nullopt;
+
+    const int w = map.width();
+    const int h = map.height();
+    if (w <= 0 || h <= 0) return std::nullopt;
+
+    auto key = [&](const grid::Point& p) -> int { return p.y * w + p.x; };
+
+    std::vector<uint8_t> is_target(static_cast<size_t>(w) * static_cast<size_t>(h), 0);
+    for (const auto* t : targets) {
+        const grid::Point c = t->cell();
+        if (c.x < 0 || c.x >= w || c.y < 0 || c.y >= h) continue;
+        is_target[static_cast<size_t>(key(c))] = 1;
+    }
+
+    std::vector<int> parent(static_cast<size_t>(w) * static_cast<size_t>(h), -1);
+    std::vector<int> dist(static_cast<size_t>(w) * static_cast<size_t>(h), -1);
+    std::vector<int> q;
+    q.reserve(static_cast<size_t>(w) * static_cast<size_t>(h));
+
+    const int start_k = key(start);
+    dist[static_cast<size_t>(start_k)] = 0;
+    q.push_back(start_k);
+
+    size_t qi = 0;
+    int found_k = -1;
+    while (qi < q.size()) {
+        const int cur_k = q[qi++];
+        const grid::Point cur{cur_k % w, cur_k / w};
+
+        if (is_target[static_cast<size_t>(cur_k)] != 0) {
+            found_k = cur_k;
+            break; // αναζήτηση κατά πλάτος
+        }
+
+        for (const auto& n : map.neighbors(cur)) {
+            const int nk = key(n);
+            if (dist[static_cast<size_t>(nk)] >= 0) continue;
+            dist[static_cast<size_t>(nk)] = dist[static_cast<size_t>(cur_k)] + 1;
+            parent[static_cast<size_t>(nk)] = cur_k;
+            q.push_back(nk);
+        }
+    }
+
+    if (found_k < 0) return std::nullopt;
+
+    grid::Path path;
+    int cur = found_k;
+    while (cur >= 0) {
+        path.push_back(grid::Point{cur % w, cur / w});
+        if (cur == start_k) break;
+        cur = parent[static_cast<size_t>(cur)];
+    }
+    std::reverse(path.begin(), path.end());
+    return path;
+}
+
+class AgentEntity final : public grid::Entity {
+public:
+    explicit AgentEntity(grid::Agent agent) : agent_(std::move(agent)) {}
+
+    int id() const { return agent_.id(); }
+    const grid::Point& position() const { return agent_.position(); }
+    const grid::Point& goalPoint() const { return agent_.goalPoint(); }
+    void setGoalPoint(const grid::Point& g) {
+        agent_.setGoalPoint(g);
+        repath_cooldown_ms_ = 0.0f;
+        stuck_ticks_ = 0;
+        last_pos_ = agent_.position();
+    }
+    bool atGoal() const { return agent_.atGoal(); }
+    size_t remainingPathNodes() const {
+        const auto& p = agent_.currentPath();
+        const size_t idx = agent_.currentPathIndex();
+        return (idx < p.size()) ? (p.size() - idx) : 0u;
+    }
+
+    grid::AgentState agentState() const { return agent_.state(); }
+
+    int score() const { return score_; }
+    void addScore(int delta) { score_ += delta; }
+    void resetScore() { score_ = 0; }
+
+    void resetForRestart() {
+        // Σταμάτα την κίνηση και καθάρισε τυχόν pending path/intent.
+        agent_.clearPath();
+        const grid::Point p = agent_.position();
+        if (!(agent_.goalPoint() == p)) {
+            agent_.setGoalPoint(p);
+        }
+        repath_cooldown_ms_ = 0.0f;
+        stuck_ticks_ = 0;
+        wants_step_ = false;
+        intended_cell_ = p;
+        cpu_throttle_ms_ = 0.0f;
+        last_pos_ = p;
+    }
+
+    // Αποφυγή σύγκρουσης 
+    bool wantsStep() const { return wants_step_; }
+    const grid::Point& intendedCell() const { return intended_cell_; }
+
+    void commitStepAllowed() {
+        const grid::Point before = agent_.position();
+        agent_.step();
+        const grid::Point after = agent_.position();
+
+        if (!agent_.atGoal() && before == after) {
+            ++stuck_ticks_;
+        } else {
+            stuck_ticks_ = 0;
+        }
+        last_pos_ = after;
+        wants_step_ = false;
+    }
+
+    void commitStepBlocked() {
+        // Αν μπλοκαριστεί, το μετράμε σαν "κόλλημα" ώστε να ξανακάνει path
+        if (!agent_.atGoal()) {
+            ++stuck_ticks_;
+        }
+        last_pos_ = agent_.position();
+        wants_step_ = false;
+    }
+
+    bool update(grid::GlobalState& state, float) override {
+        const float dt_ms = static_cast<float>(state.tick_delay_ms);
+        repath_cooldown_ms_ = std::max(0.0f, repath_cooldown_ms_ - dt_ms);
+
+        // Autopilot  όταν είναι ενεργό για αυτόν τον agent και
+        // είναι idle/τερμάτισε, διάλεξε το κοντινότερο target.
+        if (state.autopilot_agent_id == agent_.id() &&
+            repath_cooldown_ms_ <= 0.0f &&
+            (agent_.state() == grid::AgentState::Idle || agent_.state() == grid::AgentState::ReachedGoal || agent_.state() == grid::AgentState::NoPath)) {
+
+            // Διάλεξε έναν reachable στόχο.
+            // Αν επιλέγουμε συνέχεια unreachable target, ο agent μπορεί να μείνει σε NoPath για πάντα.
+            std::vector<const TargetEntity*> targets;
+            targets.reserve(state.entities.size());
+            for (const auto& e : state.entities) {
+                const auto* te = dynamic_cast<const TargetEntity*>(e.get());
+                if (!te) continue;
+                targets.push_back(te);
+            }
+
+            std::sort(targets.begin(), targets.end(), [&](const TargetEntity* a, const TargetEntity* b) {
+                return manhattan(agent_.position(), a->cell()) < manhattan(agent_.position(), b->cell());
+            });
+
+            // HARD: ένα BFS για να βρούμε το πραγματικά κοντινότερο reachable target και το shortest path.
+            // Είναι πιο γρήγορο (1 traversal) και συνήθως κάνει καλύτερες επιλογές από πολλά A* probes.
+            if (state.cpu_agent_id == agent_.id() && clampCpuDifficulty(state.cpu_difficulty) == 2) {
+                const auto path = bfsPathToNearestTarget(state.map, agent_.position(), targets);
+                if (path && !path->empty()) {
+                    const grid::Point goal = path->back();
+                    setGoalPoint(goal);
+                    agent_.setPath(*path);
+                    repath_cooldown_ms_ = 120.0f;
+                } else {
+                    repath_cooldown_ms_ = 220.0f;
+                }
+            } else {
+                const int kMaxProbe = cpuProbeLimit(state);
+                int probed = 0;
+                for (const auto* te : targets) {
+                    if (probed++ >= kMaxProbe) break;
+                    const auto p = grid::findPath(state.map, agent_.position(), te->cell());
+                    if (!p) continue;
+
+                    setGoalPoint(te->cell());
+                    agent_.setPath(*p);
+                    repath_cooldown_ms_ = 220.0f;
+                    break;
+                }
+            }
+        }
+
+        if (agent_.atGoal()) {
+            agent_.clearPath();
+            return true;
+        }
+
+        // Κάνε repath μόνο όταν χρειάζεται:
+        // - όταν αλλάζει ο στόχος
+        // - όταν το path είναι άδειο/έχει καταναλωθεί
+        // - όταν φαίνεται ότι "κολλήσαμε" για λίγα ticks
+        bool need_repath = false;
+        if (agent_.consumeGoalDirty()) {
+            need_repath = true;
+        }
+
+        const bool no_remaining_path = (remainingPathNodes() == 0u);
+        if (!need_repath && agent_.state() != grid::AgentState::NoPath) {
+            if (no_remaining_path && repath_cooldown_ms_ <= 0.0f) {
+                need_repath = true;
+            }
+            if (!need_repath && stuck_ticks_ >= 6 && repath_cooldown_ms_ <= 0.0f) {
+                need_repath = true;
+            }
+        }
+
+        if (need_repath) {
+            const auto p = grid::findPath(state.map, agent_.position(), agent_.goalPoint());
+            if (p) {
+                agent_.setPath(*p);
+                repath_cooldown_ms_ = 200.0f;
+            } else {
+                agent_.setNoPath();
+                repath_cooldown_ms_ = 800.0f;
+            }
+            stuck_ticks_ = 0;
+            last_pos_ = agent_.position();
+        }
+
+        // Φάση 1: υπολόγισε το "επόμενο κελί"
+        wants_step_ = false;
+        intended_cell_ = agent_.position();
+        if (!agent_.atGoal() && agent_.state() != grid::AgentState::NoPath) {
+            const auto& p = agent_.currentPath();
+            const size_t idx = agent_.currentPathIndex();
+            if (!p.empty() && idx < p.size()) {
+                intended_cell_ = p[idx];
+                wants_step_ = true;
+            }
+        }
+
+        // Κόψε ταχύτητα στον CPU agent
+        if (state.cpu_agent_id == agent_.id()) {
+            cpu_throttle_ms_ = std::max(0.0f, cpu_throttle_ms_ - dt_ms);
+
+            // Αν η δυσκολία γίνει πιο γρήγορη, μην περιμένεις με παλιό throttle.
+            const float desired = cpuStepThrottleMs(state);
+            cpu_throttle_ms_ = std::min(cpu_throttle_ms_, desired);
+
+            if (cpu_throttle_ms_ > 0.0f) {
+                wants_step_ = false;
+                intended_cell_ = agent_.position();
+            } else if (wants_step_) {
+                // Αφού επιτρέψουμε ένα βήμα, περίμενε λίγο πριν το επόμενο.
+                cpu_throttle_ms_ = desired;
+            }
+        }
+
+        return true;
+    }
+
+    void draw(const grid::GlobalState& state) const override {
+        const bool selected = (state.selected_agent_id == agent_.id());
+
+        // Ζωγράφισε το υπόλοιπο path (μόνο για τον selected agent)
+        if (selected) {
+            graphics::Brush path;
+            path.fill_color[0] = 0.2f;
+            path.fill_color[1] = 0.8f;
+            path.fill_color[2] = 0.9f;
+            path.fill_opacity = 0.35f;
+            path.outline_opacity = 0.0f;
+
+            const auto& p = agent_.currentPath();
+            for (size_t i = agent_.currentPathIndex(); i < p.size(); ++i) {
+                graphics::drawDisk(p[i].x + 0.5f, p[i].y + 0.5f + kHudHeight, 0.12f, path);
+            }
+
+            // Ζωγράφισε δείκτη στόχου
+            graphics::Brush goal;
+            goal.fill_color[0] = 0.2f;
+            goal.fill_color[1] = 0.95f;
+            goal.fill_color[2] = 0.3f;
+            goal.fill_opacity = 0.0f;
+            goal.outline_color[0] = goal.fill_color[0];
+            goal.outline_color[1] = goal.fill_color[1];
+            goal.outline_color[2] = goal.fill_color[2];
+            goal.outline_opacity = 0.9f;
+            goal.outline_width = 0.12f;
+
+            const auto& g = agent_.goalPoint();
+            graphics::drawDisk(g.x + 0.5f, g.y + 0.5f + kHudHeight, 0.38f, goal);
+        }
+
+        graphics::Brush agent;
+        float rgb[3];
+        agentColor(agent_.id(), rgb);
+        agent.fill_color[0] = rgb[0];
+        agent.fill_color[1] = rgb[1];
+        agent.fill_color[2] = rgb[2];
+        agent.fill_opacity = 1.0f;
+        if (selected) {
+            agent.outline_color[0] = 1.0f;
+            agent.outline_color[1] = 1.0f;
+            agent.outline_color[2] = 1.0f;
+            agent.outline_opacity = 0.9f;
+            agent.outline_width = 0.14f;
+        } else {
+            agent.outline_opacity = 0.0f;
+        }
+
+        const auto& pos = agent_.position();
+        graphics::drawDisk(pos.x + 0.5f, pos.y + 0.5f + kHudHeight, 0.35f, agent);
+    }
+
+private:
+    grid::Agent agent_;
+    int score_ = 0;
+    float repath_cooldown_ms_ = 0.0f;
+    int stuck_ticks_ = 0;
+    grid::Point last_pos_{0, 0};
+
+    // Intent για αποφυγή σύγκρουσης.
+    bool wants_step_ = false;
+    grid::Point intended_cell_{0, 0};
+
+    // Throttle κίνησης για CPU agent.
+    float cpu_throttle_ms_ = 0.0f;
+};
+
+const AgentEntity* findSelectedAgent(const grid::GlobalState& state) {
+    if (state.selected_agent_id < 0) return nullptr;
+    for (const auto& e : state.entities) {
+        const auto* ae = dynamic_cast<const AgentEntity*>(e.get());
+        if (!ae) continue;
+        if (ae->id() == state.selected_agent_id) return ae;
+    }
+    return nullptr;
+}
+
+AgentEntity* findAgentById(grid::GlobalState& state, int agent_id) {
+    if (agent_id < 0) return nullptr;
+    for (auto& e : state.entities) {
+        auto* ae = dynamic_cast<AgentEntity*>(e.get());
+        if (!ae) continue;
+        if (ae->id() == agent_id) return ae;
+    }
+    return nullptr;
+}
+
+bool readDirWASD(int& out_dx, int& out_dy) {
+    out_dx = 0;
+    out_dy = 0;
+    if (graphics::getKeyState(graphics::SCANCODE_W)) { out_dy = -1; return true; }
+    if (graphics::getKeyState(graphics::SCANCODE_S)) { out_dy = 1; return true; }
+    if (graphics::getKeyState(graphics::SCANCODE_A)) { out_dx = -1; return true; }
+    if (graphics::getKeyState(graphics::SCANCODE_D)) { out_dx = 1; return true; }
+    return false;
+}
+
+bool readDirArrows(int& out_dx, int& out_dy) {
+    out_dx = 0;
+    out_dy = 0;
+    if (graphics::getKeyState(graphics::SCANCODE_UP)) { out_dy = -1; return true; }
+    if (graphics::getKeyState(graphics::SCANCODE_DOWN)) { out_dy = 1; return true; }
+    if (graphics::getKeyState(graphics::SCANCODE_LEFT)) { out_dx = -1; return true; }
+    if (graphics::getKeyState(graphics::SCANCODE_RIGHT)) { out_dx = 1; return true; }
+    return false;
+}
+
+class RippleEntity final : public grid::Entity {
+public:
+    RippleEntity(float x, float y, float lifetime_ms) : x_(x), y_(y), remaining_ms_(lifetime_ms) {}
+
+    bool update(grid::GlobalState&, float dt_ms) override {
+        remaining_ms_ -= dt_ms;
+        radius_ += 0.0035f * dt_ms;
+        return remaining_ms_ > 0.0f;
+    }
+
+    void draw(const grid::GlobalState&) const override {
+        graphics::Brush br;
+        br.fill_color[0] = 0.2f;
+        br.fill_color[1] = 0.9f;
+        br.fill_color[2] = 0.6f;
+        br.fill_opacity = 0.0f;
+        br.outline_color[0] = br.fill_color[0];
+        br.outline_color[1] = br.fill_color[1];
+        br.outline_color[2] = br.fill_color[2];
+        br.outline_width = 0.08f;
+        br.outline_opacity = std::max(0.0f, std::min(1.0f, remaining_ms_ / 900.0f));
+
+        graphics::drawDisk(x_, y_, radius_, br);
+    }
+
+private:
+    float x_ = 0.0f;
+    float y_ = 0.0f;
+    float radius_ = 0.15f;
+    float remaining_ms_ = 0.0f;
+};
+
+void drawWorld(const grid::GlobalState& state) {
+    const int w = state.map.width();
+    const int h = state.map.height();
+
+    graphics::Brush obstacle;
+    // Υψηλότερη αντίθεση + περίγραμμα, ώστε τα εμπόδια να ξεχωρίζουν καθαρά.
+    obstacle.fill_color[0] = 0.85f;
+    obstacle.fill_color[1] = 0.85f;
+    obstacle.fill_color[2] = 0.90f;
+    obstacle.fill_opacity = 0.92f;
+    obstacle.outline_color[0] = 0.05f;
+    obstacle.outline_color[1] = 0.05f;
+    obstacle.outline_color[2] = 0.06f;
+    obstacle.outline_opacity = 0.85f;
+    obstacle.outline_width = 2.0f;
+    if (!g_obstacle_texture.empty()) {
+        // Το SGG υποστηρίζει PNG textures με ανάμιξη (blend) με το fill color.
+        obstacle.texture = g_obstacle_texture;
+        obstacle.fill_opacity = 0.85f;
+        obstacle.outline_opacity = 0.70f;
+    } else {
+        // Εφεδρικά: gradient για να μην δείχνουν τα blocks «επίπεδα».
+        obstacle.gradient = true;
+        obstacle.fill_secondary_color[0] = 0.55f;
+        obstacle.fill_secondary_color[1] = 0.60f;
+        obstacle.fill_secondary_color[2] = 0.70f;
+        obstacle.fill_secondary_opacity = 1.0f;
+        obstacle.gradient_dir_u = 1.0f;
+        obstacle.gradient_dir_v = 0.0f;
+    }
+
+    graphics::Brush free_cell;
+    free_cell.fill_color[0] = 0.92f;
+    free_cell.fill_color[1] = 0.92f;
+    free_cell.fill_color[2] = 0.95f;
+    free_cell.fill_opacity = 0.09f;
+    free_cell.outline_opacity = 0.0f;
+
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const grid::Point p{x, y};
+            const float cx = x + 0.5f;
+            const float cy = y + 0.5f + kHudHeight;
+
+            if (state.map.isFree(p)) {
+                graphics::drawRect(cx, cy, 1.0f, 1.0f, free_cell);
+            } else {
+                graphics::drawRect(cx, cy, 1.0f, 1.0f, obstacle);
+            }
+        }
+    }
+}
+
+void drawHud(const grid::GlobalState& state) {
+    // Συμπαγής λωρίδα HUD πάνω από το grid.
+    graphics::Brush hud_bg;
+    hud_bg.fill_color[0] = 0.0f;
+    hud_bg.fill_color[1] = 0.0f;
+    hud_bg.fill_color[2] = 0.0f;
+    hud_bg.fill_opacity = 0.65f;
+    hud_bg.outline_opacity = 0.0f;
+    graphics::drawRect(state.map.width() * 0.5f, kHudHeight * 0.5f, static_cast<float>(state.map.width()), kHudHeight, hud_bg);
+
+    graphics::Brush text;
+    text.fill_color[0] = 1.0f;
+    text.fill_color[1] = 1.0f;
+    text.fill_color[2] = 1.0f;
+    text.fill_opacity = 1.0f;
+    text.outline_opacity = 0.0f;
+
+    // Κρατάμε το HUD διακριτικό και ευανάγνωστο.
+    const float kFontMain = 0.80f;
+    const float kFontSub = 0.65f;
+    const float kFontScoreHeader = 0.95f;
+
+    if (!g_font_ui.empty()) {
+        graphics::setFont(g_font_ui);
+    }
+
+    auto approxTextHalfWidth = [](const std::string& s, float size) -> float {
+        // Το SGG δεν δίνει μέτρηση πλάτους κειμένου· χρησιμοποιούμε ένα «ζυγισμένο» heuristic που
+        // συμπεριφέρεται καλύτερα για φαρδιά glyphs (W/M) και στενά (I), ώστε οι τίτλοι να φαίνονται κεντραρισμένοι.
+        float units = 0.0f;
+        for (const char c : s) {
+            if (c == ' ') {
+                units += 0.35f;
+            } else if (c == 'I' || c == '1') {
+                units += 0.35f;
+            } else if (c == 'W' || c == 'M') {
+                units += 0.75f;
+            } else {
+                units += 0.55f;
+            }
+        }
+        return units * size * 0.50f;
+    };
+
+    auto drawTextShadowed = [](float x, float y, float size, const std::string& s, const graphics::Brush& fg, const graphics::Brush& sh, float dx = 0.04f, float dy = 0.04f) {
+        graphics::drawText(x + dx, y + dy, size, s, sh);
+        graphics::drawText(x, y, size, s, fg);
+    };
+
+    auto drawKeyAccentLine = [&](float x, float y, float size, const std::string& s, const graphics::Brush& normal, const graphics::Brush& accent, const graphics::Brush& sh) {
+        // Χρωματίζουμε tokens σε αγκύλες, π.χ. [ENTER], [R], [C], [1], κρατώντας το υπόλοιπο κείμενο «κανονικό».
+        // Το SGG δεν έχει rich text, άρα ζωγραφίζουμε τμήματα ένα-ένα και προχωράμε το x με το ίδιο heuristic.
+        const auto approxTextWidth = [&](const std::string& seg) {
+            return approxTextHalfWidth(seg, size) * 2.0f;
+        };
+
+        float pen_x = x;
+        size_t i = 0;
+        while (i < s.size()) {
+            if (s[i] == '[') {
+                const size_t close = s.find(']', i + 1);
+                if (close != std::string::npos) {
+                    const std::string tok = s.substr(i, close - i + 1);
+                    drawTextShadowed(pen_x, y, size, tok, accent, sh);
+                    pen_x += approxTextWidth(tok);
+                    i = close + 1;
+                    continue;
+                }
+            }
+
+            const size_t next = s.find('[', i);
+            const size_t end = (next == std::string::npos) ? s.size() : next;
+            const std::string seg = s.substr(i, end - i);
+            if (!seg.empty()) {
+                drawTextShadowed(pen_x, y, size, seg, normal, sh);
+                pen_x += approxTextWidth(seg);
+            }
+            i = end;
+        }
+    };
+
+    // Setup mode (επιλογή διάρκειας match).
+    if (!state.match_started) {
+        const float cx = state.map.width() * 0.5f;
+
+        // Οδηγίες setup (μπλοκ πάνω-αριστερά). Κρατάμε το κείμενο ευανάγνωστο και αποφεύγουμε υπερβολικά μεγάλες γραμμές.
+        std::string line_time_keys = "Time:  [1]=60s  [2]=90s  [3]=120s";
+        std::string line_actions = "[ENTER] Start   |   [R] Restart";
+        std::string line_controls_1 = "P1: WASD   |   P2: Arrows";
+        std::string line_controls_2;
+        if (state.cpu_agent_id >= 0) {
+            line_controls_2 = std::string("CPU: Auto (") + cpuDifficultyName(state) + ")   |   [C] CPU diff";
+        }
+        const std::string line_time_selected = "Selected: " + std::to_string(state.match_duration_sec) + "s";
+
+        const float kPanelTextX = 0.90f;
+        // Κάθετη διάταξη ρυθμισμένη ώστε ο τίτλος να «κάθεται» μέσα στο panel.
+        const float kHeaderY = 1.05f;
+        const float kLineY0 = 1.62f;
+        const float kLineDY = 0.54f;
+        const float kTextSize = 0.68f;
+        const float kTextSizeEmph = 0.78f;
+
+        // Αριστερό panel οδηγιών (πιο ευανάγνωστο από «σκέτο» κείμενο πάνω στη λωρίδα).
+        {
+            float max_text_w = 0.0f;
+            max_text_w = std::max(max_text_w, approxTextHalfWidth("SETUP", 0.92f) * 2.0f);
+            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_time_keys, kTextSize) * 2.0f);
+            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_actions, kTextSize) * 2.0f);
+            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_controls_1, kTextSize) * 2.0f);
+            if (!line_controls_2.empty()) {
+                max_text_w = std::max(max_text_w, approxTextHalfWidth(line_controls_2, kTextSize) * 2.0f);
+            }
+            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_time_selected, kTextSizeEmph) * 2.0f);
+
+            const float padding = 1.30f;
+            float panel_w = max_text_w + padding;
+            panel_w = std::min(panel_w, std::max(14.0f, state.map.width() * 0.48f));
+            panel_w = std::min(panel_w, state.map.width() - 1.0f);
+            const float panel_h = 3.85f;
+            const float panel_left = 0.55f;
+            const float panel_cx = panel_left + panel_w * 0.5f;
+            const float panel_cy = 2.05f;
+
+            graphics::Brush panel;
+            panel.fill_color[0] = 0.0f;
+            panel.fill_color[1] = 0.0f;
+            panel.fill_color[2] = 0.0f;
+            panel.fill_opacity = 0.40f;
+            panel.outline_color[0] = 1.0f;
+            panel.outline_color[1] = 1.0f;
+            panel.outline_color[2] = 1.0f;
+            panel.outline_opacity = 0.18f;
+            panel.outline_width = 0.06f;
+            graphics::drawRect(panel_cx, panel_cy, panel_w, panel_h, panel);
+
+            // Μπάρα «accent» στην αριστερή πλευρά.
+            graphics::Brush bar;
+            bar.fill_color[0] = 1.0f;
+            bar.fill_color[1] = 0.85f;
+            bar.fill_color[2] = 0.20f;
+            bar.fill_opacity = 0.90f;
+            bar.outline_opacity = 0.0f;
+            graphics::drawRect(panel_left + 0.10f, panel_cy, 0.20f, panel_h - 0.40f, bar);
+        }
+
+        graphics::Brush accent;
+        accent.fill_color[0] = 1.0f;
+        accent.fill_color[1] = 0.85f;
+        accent.fill_color[2] = 0.20f;
+        accent.fill_opacity = 1.0f;
+        accent.outline_opacity = 0.0f;
+
+        graphics::Brush shadow;
+        shadow.fill_color[0] = 0.0f;
+        shadow.fill_color[1] = 0.0f;
+        shadow.fill_color[2] = 0.0f;
+        shadow.fill_opacity = 0.75f;
+        shadow.outline_opacity = 0.0f;
+
+        graphics::Brush ui_text;
+        ui_text.fill_color[0] = 0.95f;
+        ui_text.fill_color[1] = 0.95f;
+        ui_text.fill_color[2] = 0.97f;
+        ui_text.fill_opacity = 1.0f;
+        ui_text.outline_opacity = 0.0f;
+
+        if (!g_font_display.empty()) {
+            graphics::setFont(g_font_display);
+        }
+        
+        const std::string title = "GRID WORLD";
+        graphics::drawText(std::max(0.6f, cx - approxTextHalfWidth(title, 1.05f)), 2.10f, 1.05f, title, text);
+        if (!g_font_ui.empty()) {
+            graphics::setFont(g_font_ui);
+        }
+
+        {
+            const float s = 0.92f;
+            if (!g_font_display.empty()) {
+                graphics::setFont(g_font_display);
+            }
+            drawTextShadowed(kPanelTextX, kHeaderY, s, "SETUP", accent, shadow, 0.06f, 0.06f);
+            if (!g_font_ui.empty()) {
+                graphics::setFont(g_font_ui);
+            }
+        }
+
+        drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 0.0f, kTextSize, line_time_keys, ui_text, accent, shadow);
+        drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 1.0f, kTextSize, line_actions, ui_text, accent, shadow);
+        drawTextShadowed(kPanelTextX, kLineY0 + kLineDY * 2.0f, kTextSize, line_controls_1, ui_text, shadow);
+        if (!line_controls_2.empty()) {
+            drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 3.0f, kTextSize, line_controls_2, ui_text, accent, shadow);
+            drawTextShadowed(kPanelTextX, kLineY0 + kLineDY * 4.0f, kTextSizeEmph, line_time_selected, ui_text, shadow);
+        } else {
+            drawTextShadowed(kPanelTextX, kLineY0 + kLineDY * 3.0f, kTextSizeEmph, line_time_selected, ui_text, shadow);
+        }
+        return;
+    }
+
+    // Banner «λήξης match».
+    if (state.match_over) {
+        // Εύρεση νικητή(ών) βάσει σκορ.
+        int best_score = -1;
+        std::vector<int> best_ids;
+        for (const auto& e : state.entities) {
+            const auto* ae = dynamic_cast<const AgentEntity*>(e.get());
+            if (!ae) continue;
+            const int s = ae->score();
+            if (s > best_score) {
+                best_score = s;
+                best_ids.clear();
+                best_ids.push_back(ae->id());
+            } else if (s == best_score) {
+                best_ids.push_back(ae->id());
+            }
+        }
+
+        if (!g_font_display.empty()) {
+            graphics::setFont(g_font_display);
+        }
+
+        std::string winner;
+        if (best_ids.empty()) {
+            winner = "TIME UP";
+        } else if (best_ids.size() == 1) {
+            winner = "WINNER A" + std::to_string(best_ids.front()) + " (" + std::to_string(best_score) + ")";
+        } else {
+            winner = "TIE";
+        }
+
+        // Banner (κεντράρισμα με heuristic).
+        const float cx = state.map.width() * 0.5f;
+        graphics::drawText(std::max(0.6f, cx - approxTextHalfWidth(winner, 1.15f)), 1.85f, 1.15f, winner, text);
+
+        if (!g_font_ui.empty()) {
+            graphics::setFont(g_font_ui);
+        }
+
+        if (best_ids.size() > 1) {
+            std::string ids = "A" + std::to_string(best_ids[0]);
+            for (size_t i = 1; i < best_ids.size(); ++i) {
+                ids += " & A" + std::to_string(best_ids[i]);
+            }
+            ids += " (" + std::to_string(best_score) + ")";
+            graphics::drawText(std::max(0.6f, cx - approxTextHalfWidth(ids, kFontMain)), 0.75f, kFontMain, ids, text);
+        }
+
+        {
+            const std::string restart = "Press R to restart";
+            graphics::drawText(std::max(0.6f, cx - approxTextHalfWidth(restart, kFontSub)), 3.15f, kFontSub, restart, text);
+        }
+
+        return;
+    }
+
+    // Γραμμή 1: κατάσταση + tick + targets + χρόνος.
+    {
+        std::string line1 = (state.paused ? "PAUSE" : "RUN");
+        line1 += " | " + std::to_string(state.tick_delay_ms) + "ms";
+        if (state.targets_total > 0) {
+            line1 += " | T " + std::to_string(state.targets_collected);
+        }
+        if (state.cpu_agent_id >= 0) {
+            line1 += std::string(" | CPU ") + cpuDifficultyName(state);
+        }
+        const int secs_left = static_cast<int>(std::ceil(state.match_time_left_ms / 1000.0f));
+        line1 += " | " + formatTimeMMSS(secs_left);
+        graphics::drawText(0.6f, 0.95f, kFontMain, line1, text);
+    }
+
+    // Γραμμή 2: επιλογή + autopilot.
+    {
+        std::string line2;
+        if (state.selected_agent_id >= 0) {
+            const bool ap = (state.autopilot_agent_id == state.selected_agent_id);
+            line2 = "Sel A" + std::to_string(state.selected_agent_id);
+            line2 += std::string(" | AP ") + (ap ? "ON" : "OFF");
+        } else {
+            line2 = "Sel none";
+        }
+        graphics::drawText(0.6f, 1.75f, kFontSub, line2, text);
+    }
+
+    // Το scoreboard «ζει» στη λωρίδα HUD (εκτός του grid).
+    {
+        std::vector<const AgentEntity*> agents;
+        agents.reserve(state.entities.size());
+        for (const auto& e : state.entities) {
+            const auto* ae = dynamic_cast<const AgentEntity*>(e.get());
+            if (!ae) continue;
+            agents.push_back(ae);
+        }
+        std::sort(agents.begin(), agents.end(), [](const AgentEntity* a, const AgentEntity* b) { return a->id() < b->id(); });
+
+        const float base_x = std::max(0.6f, static_cast<float>(state.map.width()) - 6.6f);
+        float y = 0.95f;
+
+        // Panel αντίθεσης πίσω από το scoreboard.
+        graphics::Brush panel;
+        panel.fill_color[0] = 0.0f;
+        panel.fill_color[1] = 0.0f;
+        panel.fill_color[2] = 0.0f;
+        panel.fill_opacity = 0.35f;
+        panel.outline_opacity = 0.0f;
+        const float panel_w = 6.2f;
+        const float panel_h = kHudHeight - 0.7f;
+        graphics::drawRect(base_x + panel_w * 0.5f, kHudHeight * 0.5f, panel_w, panel_h, panel);
+
+        graphics::Brush header = text;
+        header.fill_opacity = 0.95f;
+        if (!g_font_display.empty()) {
+            graphics::setFont(g_font_display);
+        }
+        graphics::drawText(base_x, y, kFontScoreHeader, "SCORE", header);
+        if (!g_font_ui.empty()) {
+            graphics::setFont(g_font_ui);
+        }
+        y += 0.75f;
+
+        for (const auto* ae : agents) {
+            float rgb[3];
+            agentColor(ae->id(), rgb);
+            graphics::Brush line = text;
+            line.fill_color[0] = rgb[0];
+            line.fill_color[1] = rgb[1];
+            line.fill_color[2] = rgb[2];
+            const bool is_sel = (state.selected_agent_id == ae->id());
+            const std::string s = std::string(is_sel ? "> " : "  ") +
+                                  "A" + std::to_string(ae->id()) + ": " + std::to_string(ae->score());
+            graphics::drawText(base_x, y, kFontSub, s, line);
+            y += 0.65f;
+        }
+    }
+}
+
+grid::Point nearestFreeCell(const grid::Map& map, grid::Point desired) {
+    if (map.isFree(desired)) return desired;
+    const int w = map.width();
+    const int h = map.height();
+    const int max_r = std::max(w, h);
+    for (int r = 1; r <= max_r; ++r) {
+        for (int dy = -r; dy <= r; ++dy) {
+            const int y = desired.y + dy;
+            const int rem = r - std::abs(dy);
+            const int xs[2] = { desired.x - rem, desired.x + rem };
+            for (int i = 0; i < 2; ++i) {
+                const int x = xs[i];
+                const grid::Point p{x, y};
+                if (map.isFree(p)) return p;
+            }
+        }
+    }
+    return desired;
+}
+
+bool loadAgentsConfig(const std::string& cfgPath, const grid::Map& map, std::vector<std::unique_ptr<grid::Entity>>& out_entities) {
+    std::ifstream in(cfgPath);
+    if (!in) return false;
+
+    int id, sx, sy, gx, gy;
+    out_entities.clear();
+    while (in >> id >> sx >> sy >> gx >> gy) {
+        grid::Point start{sx, sy};
+        grid::Point goal{gx, gy};
+        start = nearestFreeCell(map, start);
+        goal = nearestFreeCell(map, goal);
+        grid::Agent agent{id, start, goal};
+        out_entities.push_back(std::make_unique<AgentEntity>(std::move(agent)));
+    }
+    return true;
+}
+
+void collectTargets(grid::GlobalState& state) {
+    if (state.targets_total <= 0) return;
+
+    auto key = [&](const grid::Point& p) -> int { return p.y * state.map.width() + p.x; };
+
+    std::unordered_map<int, AgentEntity*> agent_at;
+    agent_at.reserve(state.entities.size());
+    for (auto& e : state.entities) {
+        auto* ae = dynamic_cast<AgentEntity*>(e.get());
+        if (!ae) continue;
+        agent_at[key(ae->position())] = ae;
+    }
+
+    const std::string sound = resolveCollectSoundPath();
+
+    int removed = 0;
+
+    for (auto it = state.entities.begin(); it != state.entities.end();) {
+        const auto* te = dynamic_cast<const TargetEntity*>((*it).get());
+        if (!te) {
+            ++it;
+            continue;
+        }
+
+        const int tk = key(te->cell());
+        auto it_agent = agent_at.find(tk);
+        if (it_agent != agent_at.end()) {
+            state.targets_collected += 1;
+            it_agent->second->addScore(1);
+            if (!sound.empty()) {
+                graphics::playSound(sound, 0.35f);
+            }
+            it = state.entities.erase(it);
+            ++removed;
+        } else {
+            ++it;
+        }
+    }
+
+    // Κάνουμε respawn στα targets ώστε το match να μένει «ζωντανό» (το autopilot δεν «μένει από στόχους»).
+    if (removed > 0) {
+        static std::mt19937 rng(std::random_device{}());
+        std::uniform_int_distribution<int> dx(0, std::max(0, state.map.width() - 1));
+        std::uniform_int_distribution<int> dy(0, std::max(0, state.map.height() - 1));
+
+        std::unordered_set<int> used;
+        used.reserve(state.entities.size() + static_cast<size_t>(removed));
+        for (const auto& e : state.entities) {
+            if (const auto* ae = dynamic_cast<const AgentEntity*>(e.get())) {
+                used.insert(key(ae->position()));
+            } else if (const auto* te2 = dynamic_cast<const TargetEntity*>(e.get())) {
+                used.insert(key(te2->cell()));
+            }
+        }
+
+        std::vector<std::unique_ptr<grid::Entity>> targets;
+        targets.reserve(static_cast<size_t>(removed));
+
+        int attempts = 0;
+        const int max_attempts = std::max(2000, removed * 250);
+        while (static_cast<int>(targets.size()) < removed && attempts < max_attempts) {
+            ++attempts;
+            grid::Point p{dx(rng), dy(rng)};
+            if (!state.map.isFree(p)) continue;
+            const int k = key(p);
+            if (used.count(k)) continue;
+            used.insert(k);
+            targets.push_back(std::make_unique<TargetEntity>(p));
+        }
+
+        state.entities.insert(state.entities.begin(),
+                              std::make_move_iterator(targets.begin()),
+                              std::make_move_iterator(targets.end()));
+    }
+}
+
+bool cellOccupiedByAgent(const grid::GlobalState& state, const grid::Point& cell) {
+    for (const auto& e : state.entities) {
+        const auto* ae = dynamic_cast<const AgentEntity*>(e.get());
+        if (!ae) continue;
+        if (ae->position() == cell) return true;
+    }
+    return false;
+}
+
+void spawnInitialTargets(grid::GlobalState& state, int count) {
+    // Αφαιρούμε τυχόν υπάρχοντα targets πριν κάνουμε spawn καινούργια (χρήσιμο όταν αλλάζει η διάρκεια του match).
+    for (auto it = state.entities.begin(); it != state.entities.end();) {
+        if (dynamic_cast<TargetEntity*>((*it).get())) {
+            it = state.entities.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    state.targets_total = 0;
+    state.targets_collected = 0;
+    if (count <= 0) return;
+
+    std::mt19937 rng(1337);
+    std::uniform_int_distribution<int> dx(0, std::max(0, state.map.width() - 1));
+    std::uniform_int_distribution<int> dy(0, std::max(0, state.map.height() - 1));
+
+    auto key = [&](const grid::Point& p) -> int { return p.y * state.map.width() + p.x; };
+    std::unordered_set<int> used;
+
+    std::vector<std::unique_ptr<grid::Entity>> targets;
+    targets.reserve(static_cast<size_t>(count));
+
+    int attempts = 0;
+    const int max_attempts = std::max(5000, count * 250);
+    while (static_cast<int>(targets.size()) < count && attempts < max_attempts) {
+        ++attempts;
+        grid::Point p{dx(rng), dy(rng)};
+        if (!state.map.isFree(p)) continue;
+        if (cellOccupiedByAgent(state, p)) continue;
+        const int k = key(p);
+        if (used.count(k)) continue;
+        used.insert(k);
+        targets.push_back(std::make_unique<TargetEntity>(p));
+    }
+
+    state.targets_total = static_cast<int>(targets.size());
+
+    // Ζωγραφίζουμε targets «κάτω» από τους agents βάζοντάς τα στην αρχή του vector.
+    state.entities.insert(state.entities.begin(),
+                          std::make_move_iterator(targets.begin()),
+                          std::make_move_iterator(targets.end()));
+}
+
+int computeTargetPoolSize(const grid::GlobalState& state) {
+    const int area = state.map.width() * state.map.height();
+    const int base = std::max(1, area / 45);
+    const int duration_factor = std::clamp(state.match_duration_sec / 60, 1, 5);
+    return std::clamp(base * duration_factor, 20, 180);
+}
+
+void restartToSetup(grid::GlobalState& state) {
+    state.match_started = false;
+    state.match_over = false;
+    state.paused = true;
+    state.step_once = false;
+    state.accumulator_ms = 0.0f;
+    state.match_time_left_ms = static_cast<float>(state.match_duration_sec) * 1000.0f;
+    state.targets_collected = 0;
+
+    // Reset στα σκορ των agents + σταμάτημα της κίνησής τους.
+    for (auto& e : state.entities) {
+        if (auto* ae = dynamic_cast<AgentEntity*>(e.get())) {
+            ae->resetScore();
+            ae->resetForRestart();
+        }
+    }
+
+    // Κρατάμε τον CPU agent σε autopilot.
+    state.autopilot_agent_id = state.cpu_agent_id;
+
+    // Respawn στο pool των targets ώστε να ταιριάζει με την επιλεγμένη διάρκεια.
+    spawnInitialTargets(state, computeTargetPoolSize(state));
+}
+
+void draw_callback() {
+    const auto* state = static_cast<const grid::GlobalState*>(graphics::getUserData());
+    if (!state) return;
+
+    drawWorld(*state);
+    state->draw();
+    drawHud(*state);
+}
+
+void update_callback(float ms) {
+    auto* state = static_cast<grid::GlobalState*>(graphics::getUserData());
+    if (!state) return;
+
+    // Ανίχνευση «ακμής» πλήκτρων ( για toggles.
+    static bool prev_space = false;
+    static bool prev_n = false;
+    static bool prev_p = false;
+    static bool prev_enter = false;
+    static bool prev_1 = false;
+    static bool prev_2 = false;
+    static bool prev_3 = false;
+    static bool prev_kp1 = false;
+    static bool prev_kp2 = false;
+    static bool prev_kp3 = false;
+    static bool prev_r = false;
+    static bool prev_c = false;
+
+    // Κατάσταση ήχων για countdown / τέλος / νικητή.
+    static bool played_countdown[4] = {false, false, false, false}; // indices 1..3
+    static bool played_end_sound = false;
+    static bool played_winner_sound = false;
+    static bool prev_match_started = false;
+
+    // Scheduler για ακολουθίες beep (ώστε να φτιάχνουμε διαφορετικά patterns με ένα μόνο sample).
+    static int beep_remaining = 0;
+    static float beep_timer_ms = 0.0f;
+    static float beep_gap_ms = 0.0f;
+    static float beep_volume = 1.0f;
+
+    static bool winner_pending = false;
+    static float winner_delay_ms = 0.0f;
+
+    // Καθαρό quit, για να μην μείνει η διεργασία να τρέχει 
+    if (graphics::getKeyState(graphics::SCANCODE_ESCAPE) || graphics::getKeyState(graphics::SCANCODE_Q)) {
+        graphics::stopMessageLoop();
+        return;
+    }
+
+    // Γρήγορο restart 
+    const bool cur_r = graphics::getKeyState(graphics::SCANCODE_R);
+    if (cur_r && !prev_r) {
+        restartToSetup(*state);
+
+        // Reset one-shot sound state.
+        played_countdown[1] = played_countdown[2] = played_countdown[3] = false;
+        played_end_sound = false;
+        played_winner_sound = false;
+        prev_match_started = false;
+        beep_remaining = 0;
+        beep_timer_ms = 0.0f;
+        winner_pending = false;
+        winner_delay_ms = 0.0f;
+        logAudioEvent("[restart] reset sound flags");
+
+        prev_r = cur_r;
+        return;
+    }
+
+    // Μικρή αλληλεπίδραση (απαίτηση: να υπάρχει έστω κάτι από input)
+    const bool cur_space = graphics::getKeyState(graphics::SCANCODE_SPACE);
+    if (cur_space && !prev_space) {
+        state->paused = !state->paused;
+    }
+    const bool cur_n = graphics::getKeyState(graphics::SCANCODE_N);
+    if (cur_n && !prev_n) {
+        state->step_once = true;
+    }
+
+    // Cycle δυσκολίας CPU (έχει νόημα μόνο αν υπάρχει CPU agent).
+    const bool cur_c = graphics::getKeyState(graphics::SCANCODE_C);
+    if (cur_c && !prev_c && state->cpu_agent_id >= 0) {
+        cycleCpuDifficulty(*state);
+    }
+
+    // Autopilot toggle με 'P' (για να μην μπλέκει με το WASD 'A').
+    // Αν υπάρχει CPU agent, το autopilot είναι δεσμευμένο γι' αυτόν.
+    const bool cur_p = graphics::getKeyState(graphics::SCANCODE_P);
+    if (cur_p && !prev_p && state->selected_agent_id >= 0 && state->cpu_agent_id < 0) {
+        if (state->autopilot_agent_id == state->selected_agent_id) {
+            state->autopilot_agent_id = -1;
+        } else {
+            state->autopilot_agent_id = state->selected_agent_id;
+        }
+    }
+    if (graphics::getKeyState(graphics::SCANCODE_MINUS)) {
+        state->tick_delay_ms = std::min(2000, state->tick_delay_ms + 50);
+    }
+    if (graphics::getKeyState(graphics::SCANCODE_EQUALS)) {
+        state->tick_delay_ms = std::max(10, state->tick_delay_ms - 50);
+    }
+
+    prev_space = cur_space;
+    prev_n = cur_n;
+    prev_p = cur_p;
+    prev_r = cur_r;
+    prev_c = cur_c;
+
+    // Setup / start του match.
+    const bool cur_enter = graphics::getKeyState(graphics::SCANCODE_RETURN) || graphics::getKeyState(graphics::SCANCODE_RETURN2);
+    const bool cur_1 = graphics::getKeyState(graphics::SCANCODE_1);
+    const bool cur_2 = graphics::getKeyState(graphics::SCANCODE_2);
+    const bool cur_3 = graphics::getKeyState(graphics::SCANCODE_3);
+    const bool cur_kp1 = graphics::getKeyState(graphics::SCANCODE_KP_1);
+    const bool cur_kp2 = graphics::getKeyState(graphics::SCANCODE_KP_2);
+    const bool cur_kp3 = graphics::getKeyState(graphics::SCANCODE_KP_3);
+
+    if (!state->match_started) {
+        bool changed = false;
+        const bool press1 = (cur_1 && !prev_1) || (cur_kp1 && !prev_kp1);
+        const bool press2 = (cur_2 && !prev_2) || (cur_kp2 && !prev_kp2);
+        const bool press3 = (cur_3 && !prev_3) || (cur_kp3 && !prev_kp3);
+
+        if (press1) {
+            state->match_duration_sec = 60;
+            changed = true;
+        }
+        if (press2) {
+            state->match_duration_sec = 120;
+            changed = true;
+        }
+        if (press3) {
+            state->match_duration_sec = 180;
+            changed = true;
+        }
+        state->match_time_left_ms = static_cast<float>(state->match_duration_sec) * 1000.0f;
+
+        // Κλιμακώνουμε και τον αριθμό των targets ώστε να ταιριάζει με την επιλεγμένη διάρκεια.
+        if (changed) {
+            const int area = state->map.width() * state->map.height();
+            const int base = std::max(1, area / 45);
+            const int duration_factor = std::clamp(state->match_duration_sec / 60, 1, 5);
+            const int target_count = std::clamp(base * duration_factor, 20, 180);
+            spawnInitialTargets(*state, target_count);
+        }
+
+        // Δεν αφήνουμε το simulation να τρέχει 
+        state->paused = true;
+
+        if (cur_enter && !prev_enter) {
+            state->match_started = true;
+            state->paused = false;
+        }
+
+        prev_enter = cur_enter;
+        prev_1 = cur_1;
+        prev_2 = cur_2;
+        prev_3 = cur_3;
+        prev_kp1 = cur_kp1;
+        prev_kp2 = cur_kp2;
+        prev_kp3 = cur_kp3;
+        return;
+    }
+
+   
+    if (state->match_started && !prev_match_started) {
+        played_countdown[1] = played_countdown[2] = played_countdown[3] = false;
+        played_end_sound = false;
+        played_winner_sound = false;
+        beep_remaining = 0;
+        beep_timer_ms = 0.0f;
+        winner_pending = false;
+        winner_delay_ms = 0.0f;
+        logAudioEvent("[match] started");
+    }
+    prev_match_started = state->match_started;
+
+    // Τρέχουμε τυχόν pending ακολουθίες beep / καθυστερημένο winner, ακόμα κι αν είμαστε paused.
+    {
+        if (winner_pending) {
+            winner_delay_ms = std::max(0.0f, winner_delay_ms - ms);
+            if (winner_delay_ms <= 0.0f) {
+                // Μονο-μπιπ (single beep) για αποκάλυψη νικητή.
+                beep_remaining = 1;
+                beep_timer_ms = 0.0f;
+                beep_gap_ms = 0.0f;
+                beep_volume = 1.0f;
+                winner_pending = false;
+            }
+        }
+
+        if (beep_remaining > 0) {
+            beep_timer_ms = std::max(0.0f, beep_timer_ms - ms);
+            if (beep_timer_ms <= 0.0f) {
+                if (!g_sfx_countdown.empty()) {
+                    graphics::playSound(g_sfx_countdown, beep_volume);
+                }
+                --beep_remaining;
+                beep_timer_ms = beep_gap_ms;
+            }
+        }
+    }
+
+    prev_enter = cur_enter;
+    prev_1 = cur_1;
+    prev_2 = cur_2;
+    prev_3 = cur_3;
+    prev_kp1 = cur_kp1;
+    prev_kp2 = cur_kp2;
+    prev_kp3 = cur_kp3;
+
+    // Χρονόμετρο match
+    if (!state->match_over) {
+        state->match_time_left_ms = std::max(0.0f, state->match_time_left_ms - ms);
+
+        // Beeps για countdown 3-2-1 (μία φορά ανά δευτερόλεπτο)
+        const int secs_left = static_cast<int>(std::ceil(state->match_time_left_ms / 1000.0f));
+        if (secs_left >= 1 && secs_left <= 3 && !played_countdown[secs_left]) {
+            played_countdown[secs_left] = true;
+
+            
+            // 3 -> τριπλό beep, 2 -> διπλό beep, 1 -> μονό beep
+            beep_remaining = secs_left;
+            beep_timer_ms = 0.0f;
+            beep_gap_ms = 120.0f;
+            beep_volume = 0.95f;
+            logAudioEvent("[countdown] pattern x" + std::to_string(secs_left) + " sfx='" + g_sfx_countdown + "'");
+        }
+
+        if (state->match_time_left_ms <= 0.0f) {
+            state->match_over = true;
+            state->paused = true;
+            state->step_once = false;
+
+            if (!played_end_sound) {
+                if (!g_sfx_end.empty()) {
+                    // Διπλό beep ως σήμα τερματισμού.
+                    beep_remaining = 2;
+                    beep_timer_ms = 0.0f;
+                    beep_gap_ms = 180.0f;
+                    beep_volume = 1.0f;
+                    logAudioEvent("[end] pattern x2 sfx='" + g_sfx_end + "'");
+                } else {
+                    logAudioEvent("[end] (missing sfx)");
+                }
+                played_end_sound = true;
+            }
+        }
+    }
+
+    // Αποκάλυψη νικητή στο τέλος του match.
+    if (state->match_over) {
+        if (!played_winner_sound) {
+            if (!g_sfx_winner.empty()) {
+                
+                winner_pending = true;
+                winner_delay_ms = 350.0f;
+                logAudioEvent("[winner] scheduled after " + std::to_string(static_cast<int>(winner_delay_ms)) + "ms sfx='" + g_sfx_winner + "'");
+            } else {
+                logAudioEvent("[winner] (missing sfx)");
+            }
+            played_winner_sound = true;
+        }
+
+        // Σιγουρευόμαστε ότι το simulation παραμένει σταματημένο
+        state->paused = true;
+        state->step_once = false;
+    }
+
+   
+    {
+        int dx = 0, dy = 0;
+        if (readDirWASD(dx, dy) && state->player1_agent_id >= 0) {
+            if (auto* p1 = findAgentById(*state, state->player1_agent_id)) {
+                const grid::Point next{p1->position().x + dx, p1->position().y + dy};
+                if (state->map.isFree(next)) {
+                    if (state->autopilot_agent_id == p1->id()) state->autopilot_agent_id = -1;
+                    p1->setGoalPoint(next);
+                }
+            }
+        }
+
+        dx = 0; dy = 0;
+        if (readDirArrows(dx, dy) && state->player2_agent_id >= 0) {
+            if (auto* p2 = findAgentById(*state, state->player2_agent_id)) {
+                const grid::Point next{p2->position().x + dx, p2->position().y + dy};
+                if (state->map.isFree(next)) {
+                    if (state->autopilot_agent_id == p2->id()) state->autopilot_agent_id = -1;
+                    p2->setGoalPoint(next);
+                }
+            }
+        }
+    }
+
+    // Κρατάμε τον CPU agent μόνιμα σε autopilot (αν έχει οριστεί).
+    if (state->cpu_agent_id >= 0) {
+        state->autopilot_agent_id = state->cpu_agent_id;
+    }
+
+    // Αλληλεπίδραση με mouse: κάνουμε spawn ένα εφέ μικρής διάρκειας στο click.
+    graphics::MouseState mouse;
+    graphics::getMouseState(mouse);
+    if (mouse.button_left_pressed || mouse.button_right_pressed) {
+        const float cx = graphics::windowToCanvasX(static_cast<float>(mouse.cur_pos_x));
+        const float cy = graphics::windowToCanvasY(static_cast<float>(mouse.cur_pos_y));
+
+        // Αγνοούμε clicks μέσα στη λωρίδα HUD.
+        if (cy < kHudHeight) {
+            return;
+        }
+
+        const float world_y = cy - kHudHeight;
+
+       
+        // Συντεταγμένες ακριβώς ίσες με width/height· κάνουμε clamp τους δείκτες σε έγκυρα κελιά.
+        const int cell_x = std::clamp(static_cast<int>(std::floor(cx)), 0, std::max(0, state->map.width() - 1));
+        const int cell_y = std::clamp(static_cast<int>(std::floor(world_y)), 0, std::max(0, state->map.height() - 1));
+        const grid::Point cell{cell_x, cell_y};
+
+        const std::string sound = resolveClickSoundPath();
+        if (!sound.empty()) {
+            graphics::playSound(sound, 0.5f);
+        }
+
+        // Επιλογή / έλεγχος goal.
+        if (mouse.button_left_pressed) {
+            // «Ανεκτική» επιλογή: διαλέγουμε τον πιο κοντινό agent αν το click είναι κοντά στο ζωγραφισμένο disk.
+            int found_id = -1;
+            float best_d2 = 0.0f;
+            constexpr float kPickRadius = 0.55f;
+            constexpr float kPickRadius2 = kPickRadius * kPickRadius;
+            for (const auto& e : state->entities) {
+                const auto* ae = dynamic_cast<const AgentEntity*>(e.get());
+                if (!ae) continue;
+                const auto& p = ae->position();
+                const float ax = p.x + 0.5f;
+                const float ay = p.y + 0.5f + kHudHeight;
+                const float dx = cx - ax;
+                const float dy = cy - ay;
+                const float d2 = dx * dx + dy * dy;
+                if (d2 <= kPickRadius2 && (found_id < 0 || d2 < best_d2)) {
+                    found_id = ae->id();
+                    best_d2 = d2;
+                }
+            }
+
+            if (found_id >= 0) {
+                // Click κοντά σε agent -> τον επιλέγουμε.
+                state->selected_agent_id = found_id;
+            } else if (state->selected_agent_id >= 0 && state->map.isFree(cell)) {
+                // Click σε άδειο κελί -> θέτουμε goal για τον επιλεγμένο agent.
+                for (auto& e : state->entities) {
+                    auto* ae = dynamic_cast<AgentEntity*>(e.get());
+                    if (!ae) continue;
+                    if (ae->id() == state->selected_agent_id) {
+                        ae->setGoalPoint(cell);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (mouse.button_right_pressed && state->selected_agent_id >= 0 && state->map.isFree(cell)) {
+            for (auto& e : state->entities) {
+                auto* ae = dynamic_cast<AgentEntity*>(e.get());
+                if (!ae) continue;
+                if (ae->id() == state->selected_agent_id) {
+                    ae->setGoalPoint(cell);
+                    break;
+                }
+            }
+        }
+
+        // Ρητή δυναμική δέσμευση ("new") + αυτόματη αποδέσμευση μέσω unique_ptr.
+        state->entities.push_back(std::unique_ptr<grid::Entity>(new RippleEntity(cx, cy, 900.0f)));
+    }
+
+    state->accumulator_ms += ms;
+    while (state->accumulator_ms >= static_cast<float>(state->tick_delay_ms)) {
+        if (state->paused && !state->step_once) break;
+
+        state->update(static_cast<float>(state->tick_delay_ms));
+
+        // Πέρασμα αποφυγής συγκρούσεων: επιλύουμε την κίνηση των agents «ταυτόχρονα».
+        {
+            auto key = [&](const grid::Point& p) -> int { return p.y * state->map.width() + p.x; };
+
+            std::vector<AgentEntity*> agents;
+            agents.reserve(state->entities.size());
+            std::unordered_set<int> occupied;
+            occupied.reserve(state->entities.size());
+
+            for (auto& e : state->entities) {
+                auto* ae = dynamic_cast<AgentEntity*>(e.get());
+                if (!ae) continue;
+                agents.push_back(ae);
+                occupied.insert(key(ae->position()));
+            }
+
+            std::sort(agents.begin(), agents.end(), [](const AgentEntity* a, const AgentEntity* b) { return a->id() < b->id(); });
+
+            std::unordered_set<int> reserved;
+            reserved.reserve(agents.size());
+
+            for (auto* ae : agents) {
+                if (!ae->wantsStep()) continue;
+
+                const grid::Point next = ae->intendedCell();
+                const int nk = key(next);
+
+                // Μπλοκάρουμε αν το κελί-στόχος δεν είναι free ή αν είναι ήδη occupied/reserved από agent.
+                if (!state->map.isFree(next) || occupied.count(nk) || reserved.count(nk)) {
+                    ae->commitStepBlocked();
+                    continue;
+                }
+
+                reserved.insert(nk);
+                ae->commitStepAllowed();
+            }
+        }
+
+        // Αφού ενημερωθούν όλα τα entities για το tick, επιλύουμε τη συλλογή targets.
+        collectTargets(*state);
+
+        state->accumulator_ms -= static_cast<float>(state->tick_delay_ms);
+
+        if (state->step_once) {
+            state->step_once = false;
+            break;
+        }
+    }
+}
+
+} 
+
+int main(int argc, char** argv) {
+    std::string mapPath = "maps/huge.json";
+    std::string cfgPath = "configs/large_agents.txt";
+    if (argc >= 2) mapPath = argv[1];
+    if (argc >= 3) cfgPath = argv[2];
+
+    // Κάνουμε cache τον φάκελο του executable για asset lookup, ακόμη κι αν αλλάξει το cwd.
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        if (argv && argc >= 1 && argv[0]) {
+            const fs::path exe = fs::absolute(fs::path(argv[0]), ec);
+            if (!ec) g_exe_dir = exe.parent_path();
+        }
+    }
+
+    grid::GlobalState state;
+
+    if (!state.map.loadFromFile(mapPath)) {
+        std::cerr << "Failed to load map: " << mapPath << "\n";
+        return 1;
+    }
+    if (!loadAgentsConfig(cfgPath, state.map, state.entities)) {
+        std::cerr << "Failed to load agents config: " << cfgPath << "\n";
+        return 1;
+    }
+
+    // Αντιστοιχίζουμε Player 1/2/CPU στους τρεις πρώτους agents (ταξινόμηση κατά id).
+    {
+        std::vector<int> ids;
+        ids.reserve(state.entities.size());
+        for (const auto& e : state.entities) {
+            const auto* ae = dynamic_cast<const AgentEntity*>(e.get());
+            if (!ae) continue;
+            ids.push_back(ae->id());
+        }
+        std::sort(ids.begin(), ids.end());
+        if (ids.size() >= 1) state.player1_agent_id = ids[0];
+        if (ids.size() >= 2) state.player2_agent_id = ids[1];
+        if (ids.size() >= 3) state.cpu_agent_id = ids[2];
+    }
+
+
+    // Ο CPU agent (αν υπάρχει) παίζει με autopilot για να μαζεύει targets.
+    // Το match ξεκινάει σε "setup" mode, όπου ο χρήστης διαλέγει διάρκεια.
+    state.match_started = false;
+    state.match_over = false;
+    state.match_duration_sec = 120;
+    state.match_time_left_ms = static_cast<float>(state.match_duration_sec) * 1000.0f;
+
+    // Κρατάμε το autopilot για τον CPU agent.
+    state.autopilot_agent_id = state.cpu_agent_id;
+
+    const int area = state.map.width() * state.map.height();
+    // Περισσότερα targets σε μεγαλύτερο map / μεγαλύτερη διάρκεια.
+    const int base = std::max(1, area / 45);
+    const int duration_factor = std::clamp(state.match_duration_sec / 60, 1, 5);
+    const int target_count = std::clamp(base * duration_factor, 20, 180);
+    spawnInitialTargets(state, target_count);
+
+    graphics::createWindow(900, 700, "GridWorld - SGG sim");
+
+    // Για να εμφανιστεί κείμενο, πρέπει να έχει οριστεί font.
+    {
+        g_font_ui = resolveFontPath();
+        g_font_display = resolveDisplayFontPath();
+        g_obstacle_texture = resolveObstacleTexturePath();
+
+        g_sfx_countdown = resolveCountdownSoundPath();
+        g_sfx_end = resolveEndSoundPath();
+        g_sfx_winner = resolveWinnerSoundPath();
+        logAudioEvent("[startup] countdown='" + g_sfx_countdown + "' end='" + g_sfx_end + "' winner='" + g_sfx_winner + "'");
+        if (g_sfx_countdown.empty() || g_sfx_end.empty() || g_sfx_winner.empty()) {
+            std::cerr << "Warning: could not locate SGG hit1.wav for sounds."
+                      << " (countdown='" << g_sfx_countdown << "' end='" << g_sfx_end << "' winner='" << g_sfx_winner << "')\n";
+        }
+
+        const std::string initial_font = !g_font_ui.empty() ? g_font_ui : g_font_display;
+        if (!initial_font.empty()) {
+            if (!graphics::setFont(initial_font)) {
+                std::cerr << "Warning: graphics::setFont failed for: " << initial_font << "\n";
+            }
+        } else {
+            std::cerr << "Warning: could not locate a .ttf font; HUD text will not render."
+                      << " Expected under sgg-main/assets.\n";
+        }
+    }
+
+    graphics::Brush bg;
+    bg.fill_color[0] = 0.06f;
+    bg.fill_color[1] = 0.06f;
+    bg.fill_color[2] = 0.07f;
+    graphics::setWindowBackground(bg);
+
+    graphics::setCanvasSize(static_cast<float>(state.map.width()), static_cast<float>(state.map.height()) + kHudHeight);
+    graphics::setCanvasScaleMode(graphics::CANVAS_SCALE_FIT);
+
+    graphics::setUserData(&state);
+    graphics::setDrawFunction(draw_callback);
+    graphics::setUpdateFunction(update_callback);
+
+    graphics::startMessageLoop();
+
+    graphics::setUserData(nullptr);
+    graphics::destroyWindow();
+    return 0;
+}

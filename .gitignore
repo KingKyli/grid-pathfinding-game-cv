@@ -1,0 +1,49 @@
+# build files
+build/
+build_*/
+build_sgg/
+build_sgg_vcpkg/
+*.obj
+*.o
+*.exe
+*.pdb
+*.ilk
+*.idb
+
+# VS
+.vs/
+
+# Submission/packaging
+submission_staging/
+*.zip
+
+# Local debug logs
+audio_debug.txt
+
+# IDE
+.idea/
+*.swp
+
+# VSCode
+.vscode/
+
+# Python virtualenv
+.venv/
+env/
+ENV/
+
+# vcpkg (local package manager artifacts)
+vcpkg/
+vcpkg_installed/
+
+# CMake intermediate files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# Built binaries/libraries
+*.dll
+*.lib
+*.so
+*.a
+*.dylib
