@@ -87,9 +87,41 @@ if(WITH_SGG)
   target_include_directories(run_sgg PRIVATE "${SGG_INCLUDE_ROOT}")
   copy_vcpkg_runtime_dlls(run_sgg)
 
+  # ImGui integration (SDL2 + OpenGL3 backend)
+  set(IMGUI_DIR "${CMAKE_SOURCE_DIR}/external/imgui")
+  if(EXISTS "${IMGUI_DIR}/imgui.cpp")
+    add_library(imgui STATIC
+      ${IMGUI_DIR}/imgui.cpp
+      ${IMGUI_DIR}/imgui_draw.cpp
+      ${IMGUI_DIR}/imgui_tables.cpp
+      ${IMGUI_DIR}/imgui_widgets.cpp
+      ${IMGUI_DIR}/backends/imgui_impl_sdl2.cpp
+      ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+    )
+    target_include_directories(imgui PUBLIC
+      ${IMGUI_DIR}
+      ${IMGUI_DIR}/backends
+    )
+    find_package(SDL2 CONFIG QUIET)
+    find_package(OpenGL QUIET)
+    if(TARGET SDL2::SDL2)
+      target_link_libraries(imgui PUBLIC SDL2::SDL2)
+    endif()
+    if(OpenGL_FOUND)
+      target_link_libraries(imgui PUBLIC OpenGL::GL)
+    endif()
+    set(_IMGUI_AVAILABLE TRUE)
+  else()
+    set(_IMGUI_AVAILABLE FALSE)
+  endif()
+
   add_executable(run_sim_sgg ${CMAKE_SOURCE_DIR}/examples/run_sim_sgg.cpp ${GRID_SOURCES})
   target_link_libraries(run_sim_sgg PRIVATE ${_SGG_TARGET})
   target_include_directories(run_sim_sgg PRIVATE "${SGG_INCLUDE_ROOT}")
+  if(_IMGUI_AVAILABLE)
+    target_link_libraries(run_sim_sgg PRIVATE imgui)
+    target_compile_definitions(run_sim_sgg PRIVATE WITH_IMGUI)
+  endif()
   copy_vcpkg_runtime_dlls(run_sim_sgg)
 endif()
 

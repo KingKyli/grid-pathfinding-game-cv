@@ -12,7 +12,7 @@ Built as a C++17 project using the SGG graphics library and CMake.
 Θα χρειαστείς:
 - CMake
 - C++ compiler (π.χ. Visual Studio Build Tools σε Windows)
-- Τα SGG sources (φάκελος `sgg-main/`) διαθέσιμα locally για build (δεν περιλαμβάνονται στην παράδοση)
+- Δεν χρειάζεται να κατεβάσεις ξεχωριστά το SGG: το repo περιέχει ήδη τον φάκελο `sgg-main/`
 
 Το SGG θέλει εξαρτήσεις (GLEW, glm, SDL2, Freetype, SDL2_mixer). Αν λείπουν, το CMake συνήθως σκάει με μήνυμα τύπου `Could NOT find GLEW`.
 Σε Windows, ο πιο απλός/σίγουρος δρόμος είναι vcpkg (υπάρχει ήδη φάκελος `vcpkg/` στο project).
@@ -125,6 +125,141 @@ cmake --build build_sgg_vcpkg --config Debug --target pathfinding_test
 ```
 
 Αναμενόμενο output:
+```
+All tests passed (43 assertions in 9 test cases)
+```
+
+---
+
+## English Version
+
+## Project
+
+GridWorld — A* Pathfinding Simulation (C++ / SGG)
+
+Interactive 2-player grid game with a live A* pathfinding agent.
+Built as a C++17 project using the SGG graphics library and CMake.
+
+## Run (SGG demo)
+
+Run the commands below from the project root (the folder that contains CMakeLists.txt).
+
+Requirements:
+- CMake
+- A C++ compiler (for example, Visual Studio Build Tools on Windows)
+- No separate SGG download is required: the repository already includes `sgg-main/`
+
+SGG needs dependencies (GLEW, glm, SDL2, Freetype, SDL2_mixer).
+On Windows, the easiest and most reliable path is vcpkg (the repository already includes a vcpkg/ folder).
+
+### 0) vcpkg (one time)
+
+```powershell
+./vcpkg/bootstrap-vcpkg.bat
+./vcpkg/vcpkg.exe install glew glm sdl2 sdl2-mixer freetype --triplet x64-windows
+```
+
+If you do not want to type install + configure + build + run every time, use the helper script:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\run_sim_sgg.ps1
+```
+
+### 1) Configure (one time)
+
+```powershell
+# Configure with vcpkg
+cmake -S . -B build_sgg_vcpkg -DWITH_SGG=ON -DCMAKE_TOOLCHAIN_FILE=./vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows
+
+# If your system already has all dependencies (without vcpkg), you can also try:
+# cmake -S . -B build_sgg -DWITH_SGG=ON
+```
+
+If you already have a build_sgg folder configured without vcpkg, do not switch toolchains in-place.
+Create a new build folder (for example build_sgg_vcpkg) or delete the old one.
+
+### 2) Build
+
+```powershell
+cmake --build build_sgg_vcpkg --config Debug --target run_sim_sgg
+```
+
+### 3) Run
+
+```powershell
+.\build_sgg_vcpkg\Debug\run_sim_sgg.exe
+```
+
+### If it does not run or rebuild fails (LNK1168)
+
+```powershell
+taskkill /IM run_sim_sgg.exe /F
+cmake --build build_sgg_vcpkg --config Debug --target run_sim_sgg
+.\build_sgg_vcpkg\Debug\run_sim_sgg.exe
+```
+
+If you get an error like Error copying directory ... vcpkg/installed/$Triplet/..., it usually means your CMake cache is stale.
+Run a clean reconfigure:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\run_sim_sgg.ps1 -Reconfigure
+```
+
+## Folder Structure
+
+- src/: source code
+- include/: headers
+- tests/: unit tests
+- docs/requirements.md: short requirements/coverage summary
+
+## Features
+
+| Feature | Description |
+|---|---|
+| A* Pathfinding | CPU agent uses A* with Manhattan heuristic |
+| A* Visit Callback | Each A* step emits an event (open / closed / path) via callback |
+| 2-Player input | P1: WASD, P2: Arrow Keys |
+| CPU Agent | Autopilot with 3 difficulty levels (Easy / Normal / Hard) |
+| HUD Metrics | FPS, nodes expanded, path length, search time, match timer |
+| Playback controls | Play/Pause, Step-by-step (N), Speed (-/+) |
+| Map Selector | M cycles between example / large / huge maps live |
+| In-app Map Editor | LMB draws a wall, RMB erases a wall (setup mode) |
+| Pause freezes timer | Match timer is frozen while paused |
+| N-step mode | Players move, CPU agent is skipped |
+| Unit Tests | 9 Catch2 tests for A* correctness and Map::setCell |
+
+## Controls (in-game)
+
+| Key | Action |
+|---|---|
+| SPACE | Pause / Resume |
+| N | Step 1 simulation tick (players move, CPU does not) |
+| - / + | Decrease / Increase speed |
+| ENTER | Start match |
+| R | Restart to setup |
+| M | Next map (setup only) |
+| P | Autopilot ON/OFF for selected agent |
+| C | Cycle CPU difficulty |
+| Q / ESC | Quit |
+| LMB (setup) | Draw wall on grid |
+| RMB (setup) | Erase wall from grid |
+
+## Unit Tests (Catch2)
+
+```powershell
+# One time: configure with BUILD_TESTS=ON
+cmake -S . -B build_sgg_vcpkg -DWITH_SGG=ON -DBUILD_TESTS=ON `
+	-DCMAKE_TOOLCHAIN_FILE=./vcpkg/scripts/buildsystems/vcpkg.cmake `
+	-DVCPKG_TARGET_TRIPLET=x64-windows
+
+# Build tests
+cmake --build build_sgg_vcpkg --config Debug --target pathfinding_test
+
+# Run
+.\build_sgg_vcpkg\Debug\pathfinding_test.exe
+```
+
+Expected output:
 ```
 All tests passed (43 assertions in 9 test cases)
 ```
