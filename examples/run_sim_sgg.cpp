@@ -23,7 +23,7 @@
 namespace {
 
 // Ο καμβάς επεκτείνεται για να χωρέσει μια λωρίδα πληροφοριών πάνω από το πλέγμα.
-constexpr float kHudHeight = 5.6f;
+constexpr float kHudHeight = 6.6f;
 
 // Η βιβλιοθήκη γραφικών έχει μία «ενεργή» γραμματοσειρά συνολικά. Κρατάμε μια ευανάγνωστη γραμματοσειρά διεπαφής.
 static std::string g_font_ui;
@@ -36,6 +36,17 @@ static std::filesystem::path g_exe_dir;
 static std::string g_sfx_countdown;
 static std::string g_sfx_end;
 static std::string g_sfx_winner;
+static std::string g_cfg_path = "configs/large_agents.txt";
+static std::vector<std::string> g_demo_maps = {"maps/example.json", "maps/large.json", "maps/huge.json"};
+static int g_demo_map_index = 2;
+
+std::string currentDemoMapName() {
+    namespace fs = std::filesystem;
+    if (g_demo_maps.empty() || g_demo_map_index < 0 || g_demo_map_index >= static_cast<int>(g_demo_maps.size())) {
+        return "n/a";
+    }
+    return fs::path(g_demo_maps[static_cast<size_t>(g_demo_map_index)]).filename().string();
+}
 
 std::string resolveSggHitSoundPath() {
     static std::string cached;
@@ -897,10 +908,11 @@ void drawHud(const grid::GlobalState& state) {
         std::string line_controls_1 = "P1: WASD   |   P2: Arrows";
         std::string line_controls_2;
         std::string line_controls_3 = "[N] Step 1 tick   |   [-]/[+] Speed";
+        std::string line_map_keys = "[M] Next map";
         if (state.cpu_agent_id >= 0) {
             line_controls_2 = std::string("CPU: Auto (") + cpuDifficultyName(state) + ")   |   [C] CPU diff";
         }
-        const std::string line_time_selected = "Selected: " + std::to_string(state.match_duration_sec) + "s";
+        const std::string line_time_selected = "Selected: " + std::to_string(state.match_duration_sec) + "s | Map: " + currentDemoMapName();
 
         const float kPanelTextX = 0.90f;
         // Κάθετη διάταξη ρυθμισμένη ώστε ο τίτλος να «κάθεται» μέσα στο panel.
@@ -918,6 +930,7 @@ void drawHud(const grid::GlobalState& state) {
             max_text_w = std::max(max_text_w, approxTextHalfWidth(line_actions, kTextSize) * 2.0f);
             max_text_w = std::max(max_text_w, approxTextHalfWidth(line_controls_1, kTextSize) * 2.0f);
             max_text_w = std::max(max_text_w, approxTextHalfWidth(line_controls_3, kTextSize) * 2.0f);
+            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_map_keys, kTextSize) * 2.0f);
             if (!line_controls_2.empty()) {
                 max_text_w = std::max(max_text_w, approxTextHalfWidth(line_controls_2, kTextSize) * 2.0f);
             }
@@ -1002,9 +1015,11 @@ void drawHud(const grid::GlobalState& state) {
         drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 3.0f, kTextSize, line_controls_3, ui_text, accent, shadow);
         if (!line_controls_2.empty()) {
             drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 4.0f, kTextSize, line_controls_2, ui_text, accent, shadow);
-            drawTextShadowed(kPanelTextX, kLineY0 + kLineDY * 5.0f, kTextSizeEmph, line_time_selected, ui_text, shadow);
+            drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 5.0f, kTextSize, line_map_keys, ui_text, accent, shadow);
+            drawTextShadowed(kPanelTextX, kLineY0 + kLineDY * 6.0f, kTextSizeEmph, line_time_selected, ui_text, shadow);
         } else {
-            drawTextShadowed(kPanelTextX, kLineY0 + kLineDY * 4.0f, kTextSizeEmph, line_time_selected, ui_text, shadow);
+            drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 4.0f, kTextSize, line_map_keys, ui_text, accent, shadow);
+            drawTextShadowed(kPanelTextX, kLineY0 + kLineDY * 5.0f, kTextSizeEmph, line_time_selected, ui_text, shadow);
         }
         return;
     }
@@ -1412,6 +1427,7 @@ void update_callback(float ms) {
     static bool prev_kp3 = false;
     static bool prev_r = false;
     static bool prev_c = false;
+    static bool prev_m = false;
     static bool prev_minus = false;
     static bool prev_plus = false;
 
@@ -1507,6 +1523,7 @@ void update_callback(float ms) {
     const bool cur_kp1 = graphics::getKeyState(graphics::SCANCODE_KP_1);
     const bool cur_kp2 = graphics::getKeyState(graphics::SCANCODE_KP_2);
     const bool cur_kp3 = graphics::getKeyState(graphics::SCANCODE_KP_3);
+    const bool cur_m = graphics::getKeyState(graphics::SCANCODE_M);
 
     if (!state->match_started) {
         bool changed = false;
@@ -1526,6 +1543,36 @@ void update_callback(float ms) {
             state->match_duration_sec = 180;
             changed = true;
         }
+
+        if (cur_m && !prev_m && !g_demo_maps.empty()) {
+            const int next_idx = (g_demo_map_index + 1) % static_cast<int>(g_demo_maps.size());
+            const std::string next_map = g_demo_maps[static_cast<size_t>(next_idx)];
+
+            grid::Map tmp_map;
+            std::vector<std::unique_ptr<grid::Entity>> tmp_entities;
+            if (tmp_map.loadFromFile(next_map) && loadAgentsConfig(g_cfg_path, tmp_map, tmp_entities)) {
+                state->map = std::move(tmp_map);
+                state->entities = std::move(tmp_entities);
+                g_demo_map_index = next_idx;
+
+                std::vector<int> ids;
+                ids.reserve(state->entities.size());
+                for (const auto& e : state->entities) {
+                    const auto* ae = dynamic_cast<const AgentEntity*>(e.get());
+                    if (!ae) continue;
+                    ids.push_back(ae->id());
+                }
+                std::sort(ids.begin(), ids.end());
+                state->player1_agent_id = (ids.size() >= 1) ? ids[0] : -1;
+                state->player2_agent_id = (ids.size() >= 2) ? ids[1] : -1;
+                state->cpu_agent_id = (ids.size() >= 3) ? ids[2] : -1;
+
+                graphics::setCanvasSize(static_cast<float>(state->map.width()), static_cast<float>(state->map.height()) + kHudHeight);
+                restartToSetup(*state);
+                changed = false;
+            }
+        }
+
         state->match_time_left_ms = static_cast<float>(state->match_duration_sec) * 1000.0f;
 
         // Κλιμακώνουμε και τον αριθμό των targets ώστε να ταιριάζει με την επιλεγμένη διάρκεια.
@@ -1552,6 +1599,7 @@ void update_callback(float ms) {
         prev_kp1 = cur_kp1;
         prev_kp2 = cur_kp2;
         prev_kp3 = cur_kp3;
+        prev_m = cur_m;
         return;
     }
 
@@ -1601,6 +1649,7 @@ void update_callback(float ms) {
     prev_kp1 = cur_kp1;
     prev_kp2 = cur_kp2;
     prev_kp3 = cur_kp3;
+    prev_m = cur_m;
 
     // Χρονόμετρο match
     if (!state->match_over) {
@@ -1833,6 +1882,13 @@ int main(int argc, char** argv) {
     std::string cfgPath = "configs/large_agents.txt";
     if (argc >= 2) mapPath = argv[1];
     if (argc >= 3) cfgPath = argv[2];
+    g_cfg_path = cfgPath;
+    for (size_t i = 0; i < g_demo_maps.size(); ++i) {
+        if (g_demo_maps[i] == mapPath) {
+            g_demo_map_index = static_cast<int>(i);
+            break;
+        }
+    }
 
     // Κάνουμε cache τον φάκελο του executable για asset lookup, ακόμη κι αν αλλάξει το cwd.
     {
