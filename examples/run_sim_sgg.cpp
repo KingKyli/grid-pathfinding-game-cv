@@ -870,9 +870,10 @@ void drawHud(const grid::GlobalState& state) {
 
         // Οδηγίες setup (μπλοκ πάνω-αριστερά). Κρατάμε το κείμενο ευανάγνωστο και αποφεύγουμε υπερβολικά μεγάλες γραμμές.
         std::string line_time_keys = "Time:  [1]=60s  [2]=90s  [3]=120s";
-        std::string line_actions = "[ENTER] Start   |   [R] Restart";
+        std::string line_actions = "[ENTER] Start   |   [R] Restart   |   [SPACE] Pause";
         std::string line_controls_1 = "P1: WASD   |   P2: Arrows";
         std::string line_controls_2;
+        std::string line_controls_3 = "[N] Step   |   [-]/[+] Speed";
         if (state.cpu_agent_id >= 0) {
             line_controls_2 = std::string("CPU: Auto (") + cpuDifficultyName(state) + ")   |   [C] CPU diff";
         }
@@ -893,6 +894,7 @@ void drawHud(const grid::GlobalState& state) {
             max_text_w = std::max(max_text_w, approxTextHalfWidth(line_time_keys, kTextSize) * 2.0f);
             max_text_w = std::max(max_text_w, approxTextHalfWidth(line_actions, kTextSize) * 2.0f);
             max_text_w = std::max(max_text_w, approxTextHalfWidth(line_controls_1, kTextSize) * 2.0f);
+            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_controls_3, kTextSize) * 2.0f);
             if (!line_controls_2.empty()) {
                 max_text_w = std::max(max_text_w, approxTextHalfWidth(line_controls_2, kTextSize) * 2.0f);
             }
@@ -974,11 +976,12 @@ void drawHud(const grid::GlobalState& state) {
         drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 0.0f, kTextSize, line_time_keys, ui_text, accent, shadow);
         drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 1.0f, kTextSize, line_actions, ui_text, accent, shadow);
         drawTextShadowed(kPanelTextX, kLineY0 + kLineDY * 2.0f, kTextSize, line_controls_1, ui_text, shadow);
+        drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 3.0f, kTextSize, line_controls_3, ui_text, accent, shadow);
         if (!line_controls_2.empty()) {
-            drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 3.0f, kTextSize, line_controls_2, ui_text, accent, shadow);
-            drawTextShadowed(kPanelTextX, kLineY0 + kLineDY * 4.0f, kTextSizeEmph, line_time_selected, ui_text, shadow);
+            drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 4.0f, kTextSize, line_controls_2, ui_text, accent, shadow);
+            drawTextShadowed(kPanelTextX, kLineY0 + kLineDY * 5.0f, kTextSizeEmph, line_time_selected, ui_text, shadow);
         } else {
-            drawTextShadowed(kPanelTextX, kLineY0 + kLineDY * 3.0f, kTextSizeEmph, line_time_selected, ui_text, shadow);
+            drawTextShadowed(kPanelTextX, kLineY0 + kLineDY * 4.0f, kTextSizeEmph, line_time_selected, ui_text, shadow);
         }
         return;
     }
@@ -1065,6 +1068,28 @@ void drawHud(const grid::GlobalState& state) {
             line2 = "Sel none";
         }
         graphics::drawText(0.6f, 1.75f, kFontSub, line2, text);
+    }
+
+    // Γραμμή 3: οδηγός κουμπιών gameplay στη μπάρα HUD.
+    {
+        std::string line3 = "[SPACE] Pause/Run  |  [N] Step  |  [-]/[+] Speed  |  [P] AP  |  [R] Restart  |  [Q] Quit";
+        if (state.cpu_agent_id >= 0) {
+            line3 += "  |  [C] CPU";
+        }
+
+        graphics::Brush accent = text;
+        accent.fill_color[0] = 1.0f;
+        accent.fill_color[1] = 0.85f;
+        accent.fill_color[2] = 0.20f;
+
+        graphics::Brush shadow;
+        shadow.fill_color[0] = 0.0f;
+        shadow.fill_color[1] = 0.0f;
+        shadow.fill_color[2] = 0.0f;
+        shadow.fill_opacity = 0.75f;
+        shadow.outline_opacity = 0.0f;
+
+        drawKeyAccentLine(0.6f, 2.45f, 0.58f, line3, text, accent, shadow);
     }
 
     // Το scoreboard «ζει» στη λωρίδα HUD (εκτός του grid).
@@ -1343,6 +1368,8 @@ void update_callback(float ms) {
     static bool prev_kp3 = false;
     static bool prev_r = false;
     static bool prev_c = false;
+    static bool prev_minus = false;
+    static bool prev_plus = false;
 
     // Κατάσταση ήχων για countdown / τέλος / νικητή.
     static bool played_countdown[4] = {false, false, false, false}; // indices 1..3
@@ -1411,10 +1438,12 @@ void update_callback(float ms) {
             state->autopilot_agent_id = state->selected_agent_id;
         }
     }
-    if (graphics::getKeyState(graphics::SCANCODE_MINUS)) {
+    const bool cur_minus = graphics::getKeyState(graphics::SCANCODE_MINUS) || graphics::getKeyState(graphics::SCANCODE_KP_MINUS);
+    const bool cur_plus = graphics::getKeyState(graphics::SCANCODE_EQUALS) || graphics::getKeyState(graphics::SCANCODE_KP_PLUS);
+    if (cur_minus && !prev_minus) {
         state->tick_delay_ms = std::min(2000, state->tick_delay_ms + 50);
     }
-    if (graphics::getKeyState(graphics::SCANCODE_EQUALS)) {
+    if (cur_plus && !prev_plus) {
         state->tick_delay_ms = std::max(10, state->tick_delay_ms - 50);
     }
 
@@ -1423,6 +1452,8 @@ void update_callback(float ms) {
     prev_p = cur_p;
     prev_r = cur_r;
     prev_c = cur_c;
+    prev_minus = cur_minus;
+    prev_plus = cur_plus;
 
     // Setup / start του match.
     const bool cur_enter = graphics::getKeyState(graphics::SCANCODE_RETURN) || graphics::getKeyState(graphics::SCANCODE_RETURN2);
