@@ -904,8 +904,9 @@ void drawHud(const grid::GlobalState& state) {
 
         // 5 καθαρές γραμμές — κάθε γραμμή έχει ένα θέμα, πιο ευανάγνωστο.
         const std::string line_duration = "Duration:   [1] 60s     [2] 90s     [3] 120s";
-        const std::string line_actions  = "[ENTER] Start   [R] Restart   [SPACE] Pause";
+        const std::string line_actions  = "[ENTER] Start    [R] Restart    [SPACE] Pause";
         const std::string line_players  = "P1: WASD   |   P2: Arrow Keys   |   [N] Step   [-/+] Speed";
+        const std::string line_editor   = "[LMB] Draw wall   [RMB] Erase wall";
         std::string line_settings;
         if (state.cpu_agent_id >= 0) {
             line_settings = std::string("CPU: Auto  [C] Difficulty (") + cpuDifficultyName(state) + ")   [M] Next Map";
@@ -928,18 +929,20 @@ void drawHud(const grid::GlobalState& state) {
             max_text_w = std::max(max_text_w, approxTextHalfWidth(line_duration, kTextSize) * 2.0f);
             max_text_w = std::max(max_text_w, approxTextHalfWidth(line_actions,  kTextSize) * 2.0f);
             max_text_w = std::max(max_text_w, approxTextHalfWidth(line_players,  kTextSize) * 2.0f);
+            max_text_w = std::max(max_text_w, approxTextHalfWidth(line_editor,   kTextSize) * 2.0f);
             max_text_w = std::max(max_text_w, approxTextHalfWidth(line_settings, kTextSize) * 2.0f);
             max_text_w = std::max(max_text_w, approxTextHalfWidth(line_status,   kTextSizeEmph) * 2.0f);
 
             const float padding  = 1.30f;
             float panel_w = max_text_w + padding;
-            panel_w = std::min(panel_w, std::max(14.0f, state.map.width() * 0.52f));
+            panel_w = std::min(panel_w, std::max(16.0f, state.map.width() * 0.58f));
             panel_w = std::min(panel_w, state.map.width() - 1.0f);
-            // 5 γραμμές × 0.66 + margins → ύψος ~5.0 καλύπτει τα πάντα άνετα
-            const float panel_h  = 5.00f;
+            // 5 γραμμές × 0.66 + header + top/bottom padding → 6.2 units
+            // 6 γραμμές × 0.66 + header + top/bottom padding → 6.6 units (=HUD height)
+            const float panel_h  = 6.50f;
             const float panel_left = 0.55f;
             const float panel_cx = panel_left + panel_w * 0.5f;
-            const float panel_cy = 3.05f;   // κεντράρουμε μεσαία στη HUD ζώνη
+            const float panel_cy = 3.40f;   // κεντράρουμε μεσαία στη HUD ζώνη
 
             graphics::Brush panel;
             panel.fill_color[0] = 0.0f;
@@ -1006,11 +1009,13 @@ void drawHud(const grid::GlobalState& state) {
         }
 
         // 5 γραμμές περιεχομένου με σαφή θέματα.
+        // 6 γραμμές τώρα: duration / actions / players / editor / settings / status
         drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 0.0f, kTextSize,     line_duration, ui_text, accent, shadow);
         drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 1.0f, kTextSize,     line_actions,  ui_text, accent, shadow);
         drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 2.0f, kTextSize,     line_players,  ui_text, accent, shadow);
-        drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 3.0f, kTextSize,     line_settings, ui_text, accent, shadow);
-        drawTextShadowed (kPanelTextX, kLineY0 + kLineDY * 4.0f, kTextSizeEmph, line_status,   ui_text, shadow);
+        drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 3.0f, kTextSize,     line_editor,   ui_text, accent, shadow);
+        drawKeyAccentLine(kPanelTextX, kLineY0 + kLineDY * 4.0f, kTextSize,     line_settings, ui_text, accent, shadow);
+        drawTextShadowed (kPanelTextX, kLineY0 + kLineDY * 5.0f, kTextSizeEmph, line_status,   ui_text, shadow);
         return;
     }
 
@@ -1578,6 +1583,33 @@ void update_callback(float ms) {
 
         // Δεν αφήνουμε το simulation να τρέχει 
         state->paused = true;
+
+        // Map editor: στο setup mode κρατάμε click για paint/erase walls.
+        {
+            graphics::MouseState mouse_edit;
+            graphics::getMouseState(mouse_edit);
+            const bool left_down  = mouse_edit.button_left_pressed  || mouse_edit.button_left_down;
+            const bool right_down = mouse_edit.button_right_pressed || mouse_edit.button_right_down;
+            if ((left_down || right_down)) {
+                const float mcx = graphics::windowToCanvasX(static_cast<float>(mouse_edit.cur_pos_x));
+                const float mcy = graphics::windowToCanvasY(static_cast<float>(mouse_edit.cur_pos_y));
+                if (mcy >= kHudHeight) {
+                    const float world_y = mcy - kHudHeight;
+                    const int cell_x = std::clamp(static_cast<int>(std::floor(mcx)), 0, state->map.width()  - 1);
+                    const int cell_y = std::clamp(static_cast<int>(std::floor(world_y)), 0, state->map.height() - 1);
+                    const grid::Point cell{cell_x, cell_y};
+                    // Βεβαιωνόμαστε ότι δεν «χτίζουμε» πάνω σε agent.
+                    bool occupied_by_agent = false;
+                    for (const auto& e : state->entities) {
+                        const auto* ae = dynamic_cast<const AgentEntity*>(e.get());
+                        if (ae && ae->position() == cell) { occupied_by_agent = true; break; }
+                    }
+                    if (!occupied_by_agent) {
+                        state->map.setCell(cell, left_down ? 1 : 0);
+                    }
+                }
+            }
+        }
 
         if (cur_enter && !prev_enter) {
             state->match_started = true;

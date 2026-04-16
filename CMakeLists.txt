@@ -108,5 +108,10 @@ if(BUILD_TESTS)
     ${CMAKE_SOURCE_DIR}/grid/core/Map.cpp
     ${CMAKE_SOURCE_DIR}/grid/pathfinding/AStar.cpp
   )
+  find_package(Catch2 CONFIG QUIET)
+  if(TARGET Catch2::Catch2WithMain)
+    target_link_libraries(pathfinding_test PRIVATE Catch2::Catch2WithMain)
+    target_compile_definitions(pathfinding_test PRIVATE USE_CATCH2)
+  endif()
   add_test(NAME pathfinding_test COMMAND pathfinding_test)
 endif()

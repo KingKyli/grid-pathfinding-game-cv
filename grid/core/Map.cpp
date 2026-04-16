@@ -56,6 +56,12 @@ bool Map::isFree(const Point& p) const {
     return cells[index(p)] == 0;
 }
 
+bool Map::setCell(const Point& p, int value) {
+    if (!inBounds(p)) return false;
+    cells[index(p)] = value;
+    return true;
+}
+
 std::vector<Point> Map::neighbors(const Point& p) const {
     std::vector<Point> out;
     static const int dx[4] = {1,-1,0,0};

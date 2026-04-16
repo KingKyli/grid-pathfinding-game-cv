@@ -16,6 +16,8 @@ public:
     std::vector<Point> neighbors(const Point& p) const;
     int width() const { return w; }
     int height() const { return h; }
+    // Θέτει ένα κελί: 0 = ελεύθερο, 1 = εμπόδιο. Επιστρέφει false αν εκτός ορίων.
+    bool setCell(const Point& p, int value);
 
 private:
     int w{0}, h{0};
