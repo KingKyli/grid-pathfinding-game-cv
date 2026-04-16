@@ -4,6 +4,7 @@
 #include <iostream>
 #include <thread>
 #include <fstream>
+#include <unordered_set>
 
 namespace grid {
 
@@ -25,13 +26,23 @@ bool Simulation::loadAgentsConfig(const std::string& cfgPath) {
 
 void Simulation::runAscii(int ticks, int delayMs) {
     for(int t=0;t<ticks;++t) {
+        std::unordered_set<int> open_nodes;
+        std::unordered_set<int> closed_nodes;
+        std::unordered_set<int> path_nodes;
+        const auto key = [&](const Point& p) -> int { return p.y * map.width() + p.x; };
+
         // Ζήτα νέο path αν χρειάζεται.
         for(auto &a : agents) {
             if(a.atGoal()) continue;
             const auto& cur = a.currentPath();
             const bool no_remaining_path = cur.empty() || a.currentPathIndex() >= cur.size();
             if (a.consumeGoalDirty() || no_remaining_path) {
-                auto p = findPath(map, a.position(), a.goalPoint());
+                auto p = findPath(map, a.position(), a.goalPoint(), [&](const Point& pt, const std::string& state) {
+                    const int k = key(pt);
+                    if (state == "open") open_nodes.insert(k);
+                    else if (state == "closed") closed_nodes.insert(k);
+                    else if (state == "path") path_nodes.insert(k);
+                });
                 if (p) {
                     a.setPath(*p);
                 } else {
@@ -55,7 +66,15 @@ void Simulation::runAscii(int ticks, int delayMs) {
                 }
                 if(!drawn) {
                     // Πρόχειρος έλεγχος κελιού μέσω isFree.
-                    std::cout << (map.isFree(p) ? '.' : '#');
+                    if (!map.isFree(p)) {
+                        std::cout << '#';
+                    } else {
+                        const int k = key(p);
+                        if (path_nodes.count(k)) std::cout << '*';
+                        else if (closed_nodes.count(k)) std::cout << 'x';
+                        else if (open_nodes.count(k)) std::cout << 'o';
+                        else std::cout << '.';
+                    }
                 }
             }
             std::cout << '\n';

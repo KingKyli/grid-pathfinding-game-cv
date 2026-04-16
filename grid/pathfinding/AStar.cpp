@@ -12,7 +12,7 @@ static int manhattan(const Point& a, const Point& b) {
     return abs(a.x-b.x) + abs(a.y-b.y);
 }
 
-std::optional<Path> findPath(const Map& map, const Point& start, const Point& goal) {
+std::optional<Path> findPath(const Map& map, const Point& start, const Point& goal, VisitCallback cb) {
     if(!map.isFree(start) || !map.isFree(goal)) return std::nullopt;
 
     struct Node {
@@ -29,10 +29,12 @@ std::optional<Path> findPath(const Map& map, const Point& start, const Point& go
     auto key = [&](const Point& p)->int{ return p.y * map.width() + p.x; };
 
     open.push({start, manhattan(start, goal), 0});
+    if (cb) cb(start, "open");
     gscore[key(start)] = 0;
 
     while(!open.empty()) {
         Node cur = open.top(); open.pop();
+        if (cb) cb(cur.p, "closed");
         if(cur.p == goal) {
             // Ανακατασκευή μονοπατιού.
             Path path;
@@ -43,6 +45,11 @@ std::optional<Path> findPath(const Map& map, const Point& start, const Point& go
             }
             path.push_back(start);
             std::reverse(path.begin(), path.end());
+            if (cb) {
+                for (const auto& step : path) {
+                    cb(step, "path");
+                }
+            }
             return path;
         }
         for(const Point& n : map.neighbors(cur.p)) {
@@ -53,6 +60,7 @@ std::optional<Path> findPath(const Map& map, const Point& start, const Point& go
                 int f = tentative_g + manhattan(n, goal);
                 cameFrom[nk] = cur.p;
                 open.push({n, f, tentative_g});
+                if (cb) cb(n, "open");
             }
         }
     }
