@@ -39,6 +39,9 @@ static std::string g_sfx_winner;
 static std::string g_cfg_path = "configs/large_agents.txt";
 static std::vector<std::string> g_demo_maps = {"maps/example.json", "maps/large.json", "maps/huge.json"};
 static int g_demo_map_index = 2;
+static bool g_recording = false;
+static int g_record_frame = 0;
+static std::string g_record_dir = "captures";
 
 std::string currentDemoMapName() {
     namespace fs = std::filesystem;
@@ -90,6 +93,12 @@ std::string resolveSggHitSoundPath() {
     }
 
     return cached;
+}
+
+void ensureCaptureDir() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::create_directories(fs::path(g_record_dir), ec);
 }
 
 void logAudioEvent(const std::string& msg) {
@@ -1087,6 +1096,7 @@ void drawHud(const grid::GlobalState& state) {
         if (state.cpu_agent_id >= 0) {
             line1 += std::string(" | CPU ") + cpuDifficultyName(state);
         }
+        line1 += std::string(" | REC ") + (g_recording ? "ON" : "OFF");
         const int secs_left = static_cast<int>(std::ceil(state.match_time_left_ms / 1000.0f));
         line1 += " | " + formatTimeMMSS(secs_left);
         graphics::drawText(0.6f, 0.95f, kFontMain, line1, text);
@@ -1110,7 +1120,7 @@ void drawHud(const grid::GlobalState& state) {
 
     // Γραμμή 3: οδηγός κουμπιών gameplay στη μπάρα HUD.
     {
-        std::string line3 = "[SPACE] Pause/Run  |  [N] Step 1 tick  |  [-]/[+] Speed  |  [P] AP  |  [R] Restart  |  [Q] Quit";
+        std::string line3 = "[SPACE] Pause/Run  |  [N] Step 1 tick  |  [-]/[+] Speed  |  [F5] Rec  |  [P] AP  |  [R] Restart  |  [Q] Quit";
         if (state.cpu_agent_id >= 0) {
             line3 += "  |  [C] CPU";
         }
@@ -1426,6 +1436,7 @@ void update_callback(float ms) {
     static bool prev_m = false;
     static bool prev_minus = false;
     static bool prev_plus = false;
+    static bool prev_f5 = false;
 
     // Κατάσταση ήχων για countdown / τέλος / νικητή.
     static bool played_countdown[4] = {false, false, false, false}; // indices 1..3
@@ -1497,11 +1508,19 @@ void update_callback(float ms) {
     }
     const bool cur_minus = graphics::getKeyState(graphics::SCANCODE_MINUS) || graphics::getKeyState(graphics::SCANCODE_KP_MINUS);
     const bool cur_plus = graphics::getKeyState(graphics::SCANCODE_EQUALS) || graphics::getKeyState(graphics::SCANCODE_KP_PLUS);
+    const bool cur_f5 = graphics::getKeyState(graphics::SCANCODE_F5);
     if (cur_minus && !prev_minus) {
         state->tick_delay_ms = std::min(2000, state->tick_delay_ms + 50);
     }
     if (cur_plus && !prev_plus) {
         state->tick_delay_ms = std::max(10, state->tick_delay_ms - 50);
+    }
+    if (cur_f5 && !prev_f5) {
+        g_recording = !g_recording;
+        if (g_recording) {
+            ensureCaptureDir();
+            g_record_frame = 0;
+        }
     }
 
     prev_space = cur_space;
@@ -1511,6 +1530,7 @@ void update_callback(float ms) {
     prev_c = cur_c;
     prev_minus = cur_minus;
     prev_plus = cur_plus;
+    prev_f5 = cur_f5;
 
     // Setup / start του match.
     const bool cur_enter = graphics::getKeyState(graphics::SCANCODE_RETURN) || graphics::getKeyState(graphics::SCANCODE_RETURN2);
@@ -1895,6 +1915,12 @@ void update_callback(float ms) {
 
         // Αφού ενημερωθούν όλα τα entities για το tick, επιλύουμε τη συλλογή targets.
         collectTargets(*state);
+
+        // Recording scaffold: κρατάμε frame index ανά simulation tick.
+        // Το πραγματικό frame export (stb/ffmpeg) θα δέσει εδώ.
+        if (g_recording) {
+            ++g_record_frame;
+        }
 
         state->accumulator_ms -= static_cast<float>(state->tick_delay_ms);
 
