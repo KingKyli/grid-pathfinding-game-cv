@@ -5,6 +5,34 @@ GridWorld — A* Pathfinding Simulation (C++ / SGG)
 Interactive 2-player grid game with a live A* pathfinding agent.
 Built as a C++17 project using the SGG graphics library and CMake.
 
+## Video Demo (placeholder)
+
+> Εδώ θα προστεθεί αύριο το demo video.
+
+<!-- VIDEO_PLACEHOLDER_GR: YouTube/Vimeo link ή embedded preview -->
+
+## Screenshots (placeholders)
+
+> Εδώ θα προστεθούν screenshots για κάθε βασικό κομμάτι του app.
+
+### 1) Setup Screen
+<!-- SCREENSHOT_SETUP_GR: panel "SETUP", επιλογή διάρκειας, map label -->
+
+### 2) Main Match HUD
+<!-- SCREENSHOT_HUD_GR: FPS, A* nodes/path/time, controls bar -->
+
+### 3) Score Panel
+<!-- SCREENSHOT_SCORE_GR: δεξί panel με "SCORE" και agent scores -->
+
+### 4) Live Gameplay
+<!-- SCREENSHOT_GAMEPLAY_GR: agents, targets, obstacles -->
+
+### 5) Map Editor (setup mode)
+<!-- SCREENSHOT_EDITOR_GR: LMB draw wall / RMB erase wall -->
+
+### 6) End Match Banner
+<!-- SCREENSHOT_END_GR: winner/tie banner -->
+
 ## Τρέξιμο (SGG demo)
 
 Οι εντολές παρακάτω τρέχουν από το root του project (τον φάκελο που έχει το `CMakeLists.txt`).
@@ -87,7 +115,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\run_sim_sgg.ps1 -Reconfigure
 | CPU Agent | Autopilot με 3 επίπεδα δυσκολίας (Easy / Normal / Hard) |
 | HUD Metrics | FPS, nodes expanded, path length, search time, match timer |
 | Playback controls | Play/Pause, Step-by-step (N), Speed (-/+) |
-| Map Selector | `M` εναλλάσσει μεταξύ example / large / huge maps live |
+| Map Selector | `M` εναλλάσσει μεταξύ large / huge / arena_rings / symmetric_lanes / zigzag_channels maps live |
 | In-app Map Editor | LMB = ζωγράφισε τοίχο, RMB = σβήσε τοίχο (στο setup mode) |
 | Pause freezes timer | Ο χρόνος match σταματά όταν το game είναι paused |
 | N-step mode | Παίκτες κινούνται, ο CPU agent παραλείπεται |
@@ -139,6 +167,34 @@ GridWorld — A* Pathfinding Simulation (C++ / SGG)
 
 Interactive 2-player grid game with a live A* pathfinding agent.
 Built as a C++17 project using the SGG graphics library and CMake.
+
+## Video Demo (placeholder)
+
+> Demo video will be added tomorrow.
+
+<!-- VIDEO_PLACEHOLDER_EN: YouTube/Vimeo link or embedded preview -->
+
+## Screenshots (placeholders)
+
+> Screenshots for each major app section will be added tomorrow.
+
+### 1) Setup Screen
+<!-- SCREENSHOT_SETUP_EN: "SETUP" panel, duration selector, map label -->
+
+### 2) Main Match HUD
+<!-- SCREENSHOT_HUD_EN: FPS, A* nodes/path/time, controls bar -->
+
+### 3) Score Panel
+<!-- SCREENSHOT_SCORE_EN: right-side SCORE panel and agent scores -->
+
+### 4) Live Gameplay
+<!-- SCREENSHOT_GAMEPLAY_EN: agents, targets, obstacles -->
+
+### 5) Map Editor (setup mode)
+<!-- SCREENSHOT_EDITOR_EN: LMB draw wall / RMB erase wall -->
+
+### 6) End Match Banner
+<!-- SCREENSHOT_END_EN: winner/tie banner -->
 
 ## Run (SGG demo)
 
@@ -222,7 +278,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\run_sim_sgg.ps1 -Reconfigure
 | CPU Agent | Autopilot with 3 difficulty levels (Easy / Normal / Hard) |
 | HUD Metrics | FPS, nodes expanded, path length, search time, match timer |
 | Playback controls | Play/Pause, Step-by-step (N), Speed (-/+) |
-| Map Selector | M cycles between example / large / huge maps live |
+| Map Selector | M cycles between large / huge / arena_rings / symmetric_lanes / zigzag_channels maps live |
 | In-app Map Editor | LMB draws a wall, RMB erases a wall (setup mode) |
 | Pause freezes timer | Match timer is frozen while paused |
 | N-step mode | Players move, CPU agent is skipped |
