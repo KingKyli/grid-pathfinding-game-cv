@@ -5,11 +5,12 @@ GridWorld — A* Pathfinding Simulation (C++ / SGG)
 Interactive 2-player grid game with a live A* pathfinding agent.
 Built as a C++17 project using the SGG graphics library and CMake.
 
-## Video Demo (placeholder)
+## Video Demo
 
-> Εδώ θα προστεθεί αύριο το demo video.
-
-<!-- VIDEO_PLACEHOLDER_GR: YouTube/Vimeo link ή embedded preview -->
+1. [Setup](recordings/setup.mp4)
+2. [Sandbox Map Editor Mode](recordings/SandboxMap_EditorMode.mp4)
+3. [Gameplay and Winner Reveal](recordings/GameplayAndWinnerReveal.mp4)
+4. [A* Functionality and Speed Setting](recordings/Astar_funcionality&speed_setting.mp4)
 
 ## Screenshots (placeholders)
 
@@ -202,11 +203,12 @@ GridWorld — A* Pathfinding Simulation (C++ / SGG)
 Interactive 2-player grid game with a live A* pathfinding agent.
 Built as a C++17 project using the SGG graphics library and CMake.
 
-## Video Demo (placeholder)
+## Video Demo
 
-> Demo video will be added tomorrow.
-
-<!-- VIDEO_PLACEHOLDER_EN: YouTube/Vimeo link or embedded preview -->
+1. [Setup](recordings/setup.mp4)
+2. [Sandbox Map Editor Mode](recordings/SandboxMap_EditorMode.mp4)
+3. [Gameplay and Winner Reveal](recordings/GameplayAndWinnerReveal.mp4)
+4. [A* Functionality and Speed Setting](recordings/Astar_funcionality&speed_setting.mp4)
 
 ## Screenshots (placeholders)
 
@@ -215,22 +217,18 @@ Built as a C++17 project using the SGG graphics library and CMake.
 ### 1) Setup Screen
 <!-- SCREENSHOT_SETUP_EN: "SETUP" panel, duration selector, map label -->
 
-OG map setup:
+Setup:
 
-![Setup Screen (OG map)](screenshots/setup_og.png)
+![Setup Screen ](screenshots/setup_og.png)
 
-Pacman map setup:
 
-![Setup Screen (Pacman map)](screenshots/setup_pacman.png)
 
 ### 2) Main Match HUD
 <!-- SCREENSHOT_HUD_EN: FPS, A* nodes/path/time, controls bar -->
 
 ![Main Match HUD](screenshots/hud_og.png)
 
-OG panel (controls/details):
 
-![OG Panel](screenshots/panel_og.png)
 
 ### 3) Score Panel
 <!-- SCREENSHOT_SCORE_EN: right-side SCORE panel and agent scores -->
@@ -248,9 +246,9 @@ Pacman map gameplay:
 
 ![Live Gameplay (Pacman map)](screenshots/live_pacman.png)
 
-### 5) Map Editor (setup mode)
+### 5) Map Editor (setup mode/ Sandbox)
 <!-- SCREENSHOT_EDITOR_EN: LMB draw wall / RMB erase wall -->
-
+![Initial Base Before Edit](screenshots/panel_og.png)
 ![Map Editor (Sandbox)](screenshots/editor_sandbox.png)
 
 ### 6) End Match Banner
