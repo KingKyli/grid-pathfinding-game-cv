@@ -116,7 +116,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\run_sim_sgg.ps1 -Reconfigure
 | HUD Metrics | FPS, nodes expanded, path length, search time, match timer |
 | Playback controls | Play/Pause, Step-by-step (N), Speed (-/+) |
 | Map Selector | `M` εναλλάσσει μεταξύ large / huge / arena_rings / symmetric_lanes / zigzag_channels / pacman_classic / pacman_crossroads maps live |
-| In-app Map Editor | LMB = ζωγράφισε τοίχο, RMB = σβήσε τοίχο (στο setup mode) |
+| In-app Map Editor | Μόνο στο **sandbox** map: LMB = ζωγράφισε τοίχο, RMB = σβήσε τοίχο (στο setup mode) |
 | Pause freezes timer | Ο χρόνος match σταματά όταν το game είναι paused |
 | N-step mode | Παίκτες κινούνται, ο CPU agent παραλείπεται |
 | Unit Tests | 9 Catch2 tests για A* correctness και Map::setCell |
@@ -134,8 +134,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\run_sim_sgg.ps1 -Reconfigure
 | `P` | Autopilot ON/OFF για επιλεγμένο agent |
 | `C` | Εναλλαγή CPU difficulty |
 | `Q` / `ESC` | Έξοδος |
-| `LMB` (setup) | Ζωγράφισε τοίχο στο grid |
-| `RMB` (setup) | Σβήσε τοίχο από το grid |
+| `LMB` (setup) | Ζωγράφισε τοίχο στο grid (**μόνο sandbox map**) |
+| `RMB` (setup) | Σβήσε τοίχο από το grid (**μόνο sandbox map**) |
 
 ## Unit Tests (Catch2)
 
@@ -279,7 +279,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\run_sim_sgg.ps1 -Reconfigure
 | HUD Metrics | FPS, nodes expanded, path length, search time, match timer |
 | Playback controls | Play/Pause, Step-by-step (N), Speed (-/+) |
 | Map Selector | M cycles between large / huge / arena_rings / symmetric_lanes / zigzag_channels / pacman_classic / pacman_crossroads maps live |
-| In-app Map Editor | LMB draws a wall, RMB erases a wall (setup mode) |
+| In-app Map Editor | **Sandbox map only**: LMB draws a wall, RMB erases a wall (setup mode) |
 | Pause freezes timer | Match timer is frozen while paused |
 | N-step mode | Players move, CPU agent is skipped |
 | Unit Tests | 9 Catch2 tests for A* correctness and Map::setCell |
@@ -297,8 +297,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\run_sim_sgg.ps1 -Reconfigure
 | P | Autopilot ON/OFF for selected agent |
 | C | Cycle CPU difficulty |
 | Q / ESC | Quit |
-| LMB (setup) | Draw wall on grid |
-| RMB (setup) | Erase wall from grid |
+| LMB (setup) | Draw wall on grid (**sandbox map only**) |
+| RMB (setup) | Erase wall from grid (**sandbox map only**) |
 
 ## Unit Tests (Catch2)
 

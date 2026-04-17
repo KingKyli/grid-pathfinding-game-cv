@@ -53,9 +53,39 @@ static std::vector<std::string> g_demo_maps = {
     "maps/pacman_classic.json",
     "maps/pacman_crossroads.json",
     "maps/pacman_ms1.json",
-    "maps/pacman_ms2.json"
+    "maps/pacman_ms2.json",
+    "maps/sandbox.json"
 };
 static int g_demo_map_index = 0;
+static int g_sandbox_lock_w = 0;
+static int g_sandbox_lock_h = 0;
+static std::unordered_set<int> g_sandbox_locked_cells;
+
+// Επιστρέφει true μόνο αν ο τρέχων χάρτης είναι ο sandbox (ελεύθερη επεξεργασία).
+static bool isSandboxMap() {
+    if (g_demo_map_index < 0 || g_demo_map_index >= static_cast<int>(g_demo_maps.size())) return false;
+    namespace fs = std::filesystem;
+    return fs::path(g_demo_maps[static_cast<size_t>(g_demo_map_index)]).filename().string() == "sandbox.json";
+}
+
+static void rebuildSandboxLockedCells(const grid::Map& map) {
+    g_sandbox_lock_w = map.width();
+    g_sandbox_lock_h = map.height();
+    g_sandbox_locked_cells.clear();
+    for (int y = 0; y < map.height(); ++y) {
+        for (int x = 0; x < map.width(); ++x) {
+            const grid::Point p{x, y};
+            if (!map.isFree(p)) {
+                g_sandbox_locked_cells.insert(y * map.width() + x);
+            }
+        }
+    }
+}
+
+static bool isSandboxLockedCell(const grid::Point& p) {
+    if (p.x < 0 || p.y < 0 || p.x >= g_sandbox_lock_w || p.y >= g_sandbox_lock_h) return false;
+    return g_sandbox_locked_cells.find(p.y * g_sandbox_lock_w + p.x) != g_sandbox_locked_cells.end();
+}
 
 std::string currentDemoMapName() {
     namespace fs = std::filesystem;
@@ -78,6 +108,7 @@ std::string currentDemoMapLabel() {
     if (name == "pacman_ms2") return "pac_ms2";
     if (name == "large") return "large";
     if (name == "huge") return "huge";
+    if (name == "sandbox") return "sandbox [EDIT]";
     if (name.size() > 14) {
         name = name.substr(0, 14);
     }
@@ -1091,7 +1122,9 @@ void drawHud(const grid::GlobalState& state) {
         const std::string line_players2 = compact
             ? "[N] Step | [-/+] Speed"
             : "[N] Step   |   [-/+] Speed";
-        const std::string line_editor   = "[LMB] Draw wall   [RMB] Erase wall";
+        const std::string line_editor   = isSandboxMap()
+            ? "[LMB] Draw wall   [RMB] Erase custom wall"
+            : "Edit: sandbox map only  ([M] to switch)";
         std::string line_settings;
         if (state.cpu_agent_id >= 0) {
             line_settings = compact
@@ -1997,6 +2030,13 @@ void update_callback(float ms) {
                 state->map = std::move(tmp_map);
                 state->entities = std::move(tmp_entities);
                 g_demo_map_index = next_idx;
+                if (isSandboxMap()) {
+                    rebuildSandboxLockedCells(state->map);
+                } else {
+                    g_sandbox_locked_cells.clear();
+                    g_sandbox_lock_w = 0;
+                    g_sandbox_lock_h = 0;
+                }
 
                 std::vector<int> ids;
                 ids.reserve(state->entities.size());
@@ -2030,13 +2070,13 @@ void update_callback(float ms) {
         // Δεν αφήνουμε το simulation να τρέχει 
         state->paused = true;
 
-        // Map editor: στο setup mode κρατάμε click για paint/erase walls.
+        // Map editor: επιτρέπεται μόνο στο sandbox map.
         {
             graphics::MouseState mouse_edit;
             graphics::getMouseState(mouse_edit);
             const bool left_down  = mouse_edit.button_left_pressed  || mouse_edit.button_left_down;
             const bool right_down = mouse_edit.button_right_pressed || mouse_edit.button_right_down;
-            if ((left_down || right_down)) {
+            if (isSandboxMap() && (left_down || right_down)) {
                 const float mcx = graphics::windowToCanvasX(static_cast<float>(mouse_edit.cur_pos_x));
                 const float mcy = graphics::windowToCanvasY(static_cast<float>(mouse_edit.cur_pos_y));
                 if (mcy >= kHudHeight) {
@@ -2051,7 +2091,11 @@ void update_callback(float ms) {
                         if (ae && ae->position() == cell) { occupied_by_agent = true; break; }
                     }
                     if (!occupied_by_agent) {
-                        state->map.setCell(cell, left_down ? 1 : 0);
+                        if (left_down) {
+                            state->map.setCell(cell, 1);
+                        } else if (right_down && !isSandboxLockedCell(cell)) {
+                            state->map.setCell(cell, 0);
+                        }
                     }
                 }
             }
@@ -2382,6 +2426,9 @@ int main(int argc, char** argv) {
     if (!state.map.loadFromFile(resolveMapPath(mapPath))) {
         std::cerr << "Failed to load map: " << mapPath << "\n";
         return 1;
+    }
+    if (isSandboxMap()) {
+        rebuildSandboxLockedCells(state.map);
     }
     if (!loadAgentsConfig(cfgPath, state.map, state.entities)) {
         std::cerr << "Failed to load agents config: " << cfgPath << "\n";
