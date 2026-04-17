@@ -18,20 +18,54 @@ Built as a C++17 project using the SGG graphics library and CMake.
 ### 1) Setup Screen
 <!-- SCREENSHOT_SETUP_GR: panel "SETUP", επιλογή διάρκειας, map label -->
 
+OG map setup:
+
+![Setup Screen (OG map)](screenshots/setup_og.png)
+
+Pacman map setup:
+
+![Setup Screen (Pacman map)](screenshots/setup_pacman.png)
+
 ### 2) Main Match HUD
 <!-- SCREENSHOT_HUD_GR: FPS, A* nodes/path/time, controls bar -->
+
+![Main Match HUD](screenshots/hud_og.png)
+
+OG panel (controls/details):
+
+![OG Panel](screenshots/panel_og.png)
 
 ### 3) Score Panel
 <!-- SCREENSHOT_SCORE_GR: δεξί panel με "SCORE" και agent scores -->
 
+![Score Panel](screenshots/score_panel.png)
+
 ### 4) Live Gameplay
 <!-- SCREENSHOT_GAMEPLAY_GR: agents, targets, obstacles -->
+
+OG map gameplay:
+
+![Live Gameplay (OG map)](screenshots/live_og.png)
+
+Pacman map gameplay:
+
+![Live Gameplay (Pacman map)](screenshots/live_pacman.png)
 
 ### 5) Map Editor (setup mode)
 <!-- SCREENSHOT_EDITOR_GR: LMB draw wall / RMB erase wall -->
 
+![Map Editor (Sandbox)](screenshots/editor_sandbox.png)
+
 ### 6) End Match Banner
 <!-- SCREENSHOT_END_GR: winner/tie banner -->
+
+OG winner:
+
+![Winner (OG)](screenshots/winner_og.png)
+
+Pacman winner:
+
+![Winner (Pacman)](screenshots/winner_pacman.png)
 
 ## Τρέξιμο (SGG demo)
 
@@ -181,20 +215,54 @@ Built as a C++17 project using the SGG graphics library and CMake.
 ### 1) Setup Screen
 <!-- SCREENSHOT_SETUP_EN: "SETUP" panel, duration selector, map label -->
 
+OG map setup:
+
+![Setup Screen (OG map)](screenshots/setup_og.png)
+
+Pacman map setup:
+
+![Setup Screen (Pacman map)](screenshots/setup_pacman.png)
+
 ### 2) Main Match HUD
 <!-- SCREENSHOT_HUD_EN: FPS, A* nodes/path/time, controls bar -->
+
+![Main Match HUD](screenshots/hud_og.png)
+
+OG panel (controls/details):
+
+![OG Panel](screenshots/panel_og.png)
 
 ### 3) Score Panel
 <!-- SCREENSHOT_SCORE_EN: right-side SCORE panel and agent scores -->
 
+![Score Panel](screenshots/score_panel.png)
+
 ### 4) Live Gameplay
 <!-- SCREENSHOT_GAMEPLAY_EN: agents, targets, obstacles -->
+
+OG map gameplay:
+
+![Live Gameplay (OG map)](screenshots/live_og.png)
+
+Pacman map gameplay:
+
+![Live Gameplay (Pacman map)](screenshots/live_pacman.png)
 
 ### 5) Map Editor (setup mode)
 <!-- SCREENSHOT_EDITOR_EN: LMB draw wall / RMB erase wall -->
 
+![Map Editor (Sandbox)](screenshots/editor_sandbox.png)
+
 ### 6) End Match Banner
 <!-- SCREENSHOT_END_EN: winner/tie banner -->
+
+OG winner:
+
+![Winner (OG)](screenshots/winner_og.png)
+
+Pacman winner:
+
+![Winner (Pacman)](screenshots/winner_pacman.png)
 
 ## Run (SGG demo)
 
