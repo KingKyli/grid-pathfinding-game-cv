@@ -19,22 +19,14 @@ Built as a C++17 project using the SGG graphics library and CMake.
 ### 1) Setup Screen
 <!-- SCREENSHOT_SETUP_GR: panel "SETUP", επιλογή διάρκειας, map label -->
 
-OG map setup:
+Setup:
 
-![Setup Screen (OG map)](screenshots/setup_og.png)
-
-Pacman map setup:
-
-![Setup Screen (Pacman map)](screenshots/setup_pacman.png)
+![Setup Screen ](screenshots/setup_og.png)
 
 ### 2) Main Match HUD
 <!-- SCREENSHOT_HUD_GR: FPS, A* nodes/path/time, controls bar -->
 
 ![Main Match HUD](screenshots/hud_og.png)
-
-OG panel (controls/details):
-
-![OG Panel](screenshots/panel_og.png)
 
 ### 3) Score Panel
 <!-- SCREENSHOT_SCORE_GR: δεξί panel με "SCORE" και agent scores -->
@@ -55,6 +47,7 @@ Pacman map gameplay:
 ### 5) Map Editor (setup mode)
 <!-- SCREENSHOT_EDITOR_GR: LMB draw wall / RMB erase wall -->
 
+![Initial Base Before Edit](screenshots/panel_og.png)
 ![Map Editor (Sandbox)](screenshots/editor_sandbox.png)
 
 ### 6) End Match Banner
