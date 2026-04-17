@@ -49,6 +49,12 @@ Set-Location -LiteralPath $root
 
 Write-Step "Project root: $root"
 
+# Ensure winget command aliases (ffmpeg/ffplay/ffprobe) are visible in this shell.
+$wingetLinks = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links'
+if ((Test-Path -LiteralPath $wingetLinks) -and ($env:Path -notlike "*$wingetLinks*")) {
+  $env:Path = "$wingetLinks;$env:Path"
+}
+
 # 1) Έλεγχος ότι υπάρχει vcpkg
 $bootstrap = Join-Path $root 'vcpkg\bootstrap-vcpkg.bat'
 $vcpkgExe  = Join-Path $root 'vcpkg\vcpkg.exe'

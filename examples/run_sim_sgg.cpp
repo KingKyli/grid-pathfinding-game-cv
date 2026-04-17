@@ -1,7 +1,11 @@
 #include <sgg/graphics.h>
 
+#include <GL/glew.h>
+
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <cmath>
 #include <filesystem>
@@ -10,6 +14,7 @@
 #include <iterator>
 #include <memory>
 #include <random>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -29,6 +34,12 @@ constexpr float kHudHeight = 7.4f;
 static std::string g_font_ui;
 static std::string g_font_display;
 static std::string g_obstacle_texture;
+static std::string g_pacman_wall_texture;
+static std::string g_pacman_player_texture;
+static std::string g_pacman_ghost_red_texture;
+static std::string g_pacman_ghost_pink_texture;
+static std::string g_pacman_ghost_cyan_texture;
+static std::string g_pacman_pellet_texture;
 
 // Για να βρίσκουμε πόρους ακόμη κι όταν ο τρέχων φάκελος εργασίας δεν είναι η ρίζα του έργου.
 static std::filesystem::path g_exe_dir;
@@ -40,12 +51,35 @@ static std::string g_cfg_path = "configs/large_agents.txt";
 static std::vector<std::string> g_demo_maps = {
     "maps/large.json",
     "maps/huge.json",
-    "maps/maze_library_like.json"
+    "maps/arena_rings.json",
+    "maps/symmetric_lanes.json",
+    "maps/zigzag_channels.json",
+    "maps/pacman_classic.json",
+    "maps/pacman_crossroads.json",
+    "maps/pacman_ms1.json",
+    "maps/pacman_ms2.json"
 };
-static int g_demo_map_index = 2;
+static int g_demo_map_index = 0;
 static bool g_recording = false;
 static int g_record_frame = 0;
 static std::string g_record_dir = "captures";
+static std::string g_record_dir_absolute;
+static std::string g_record_session_tag;
+static std::string g_record_last_video_path;
+static std::string g_record_notice;
+static float g_record_notice_ms = 0.0f;
+static FILE* g_record_pipe = nullptr;
+static int g_record_viewport_x = 0;
+static int g_record_viewport_y = 0;
+static int g_record_width = 0;
+static int g_record_height = 0;
+static std::vector<unsigned char> g_record_rgba_buffer;
+static bool g_ffmpeg_checked = false;
+static bool g_ffmpeg_available = false;
+static std::string g_ffmpeg_executable;
+constexpr int kRecordFps = 30;
+constexpr std::chrono::milliseconds kRecordFrameInterval(1000 / kRecordFps);
+static std::chrono::steady_clock::time_point g_record_next_capture_tp;
 
 std::string currentDemoMapName() {
     namespace fs = std::filesystem;
@@ -61,7 +95,63 @@ std::string currentDemoMapLabel() {
     if (name.size() > ext.size() && name.rfind(ext) == name.size() - ext.size()) {
         name.erase(name.size() - ext.size());
     }
+    if (name == "maze_library_like") return "maze";
+    if (name == "pacman_classic") return "pac_classic";
+    if (name == "pacman_crossroads") return "pac_cross";
+    if (name == "pacman_ms1") return "pac_ms1";
+    if (name == "pacman_ms2") return "pac_ms2";
+    if (name == "large") return "large";
+    if (name == "huge") return "huge";
+    if (name.size() > 14) {
+        name = name.substr(0, 14);
+    }
     return name;
+}
+
+bool isPacmanThemeMapName(const std::string& map_name) {
+    return map_name.rfind("pacman_", 0) == 0;
+}
+
+bool isPacmanThemeActive() {
+    return isPacmanThemeMapName(currentDemoMapLabel()) || isPacmanThemeMapName(currentDemoMapName());
+}
+
+const std::string* pacmanAgentTextureForId(int agent_id) {
+    switch (agent_id % 4) {
+    case 0:
+        return g_pacman_player_texture.empty() ? nullptr : &g_pacman_player_texture;
+    case 1:
+        return g_pacman_ghost_red_texture.empty() ? nullptr : &g_pacman_ghost_red_texture;
+    case 2:
+        return g_pacman_ghost_pink_texture.empty() ? nullptr : &g_pacman_ghost_pink_texture;
+    default:
+        return g_pacman_ghost_cyan_texture.empty() ? nullptr : &g_pacman_ghost_cyan_texture;
+    }
+}
+
+void pacmanAgentColor(int agent_id, float out_rgb[3]) {
+    switch (agent_id % 4) {
+    case 0: // pacman yellow
+        out_rgb[0] = 0.98f;
+        out_rgb[1] = 0.88f;
+        out_rgb[2] = 0.10f;
+        break;
+    case 1: // ghost red
+        out_rgb[0] = 0.98f;
+        out_rgb[1] = 0.20f;
+        out_rgb[2] = 0.20f;
+        break;
+    case 2: // ghost pink
+        out_rgb[0] = 0.98f;
+        out_rgb[1] = 0.45f;
+        out_rgb[2] = 0.78f;
+        break;
+    default: // ghost cyan
+        out_rgb[0] = 0.20f;
+        out_rgb[1] = 0.92f;
+        out_rgb[2] = 0.98f;
+        break;
+    }
 }
 
 std::string resolveMapPath(const std::string& map_path) {
@@ -143,6 +233,206 @@ void ensureCaptureDir() {
     namespace fs = std::filesystem;
     std::error_code ec;
     fs::create_directories(fs::path(g_record_dir), ec);
+    const fs::path abs = fs::absolute(fs::path(g_record_dir), ec);
+    g_record_dir_absolute = ec ? fs::path(g_record_dir).string() : abs.string();
+}
+
+void setRecordingNotice(const std::string& msg) {
+    g_record_notice = msg;
+    g_record_notice_ms = 3500.0f;
+}
+
+std::string makeRecordingSessionTag() {
+    using namespace std::chrono;
+    const auto now_ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+    return currentDemoMapLabel() + "_" + std::to_string(now_ms);
+}
+
+bool checkFfmpegAvailable() {
+    if (g_ffmpeg_checked) return g_ffmpeg_available;
+
+    g_ffmpeg_checked = true;
+    g_ffmpeg_available = false;
+
+#ifdef _WIN32
+    // 1) Try PATH first.
+    if (std::system("ffmpeg -version >nul 2>&1") == 0) {
+        g_ffmpeg_executable = "ffmpeg";
+        g_ffmpeg_available = true;
+        return true;
+    }
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    std::vector<fs::path> candidates;
+
+    const char* local_app_data = std::getenv("LOCALAPPDATA");
+    if (local_app_data && *local_app_data) {
+        const fs::path lad(local_app_data);
+        candidates.push_back(lad / "Microsoft" / "WinGet" / "Links" / "ffmpeg.exe");
+        candidates.push_back(lad / "Microsoft" / "WindowsApps" / "ffmpeg.exe");
+
+        const fs::path packages_dir = lad / "Microsoft" / "WinGet" / "Packages";
+        if (fs::exists(packages_dir, ec) && !ec) {
+            for (const auto& e : fs::directory_iterator(packages_dir, ec)) {
+                if (ec) break;
+                if (!e.is_directory(ec) || ec) continue;
+                const std::string dir_name = e.path().filename().string();
+                if (dir_name.rfind("Gyan.FFmpeg", 0) != 0) continue;
+
+                for (const auto& sub : fs::recursive_directory_iterator(e.path(), ec)) {
+                    if (ec) break;
+                    if (!sub.is_regular_file(ec) || ec) continue;
+                    if (sub.path().filename() == "ffmpeg.exe") {
+                        candidates.push_back(sub.path());
+                    }
+                }
+            }
+        }
+    }
+
+    for (const auto& p : candidates) {
+        if (p.empty()) continue;
+        if (fs::exists(p, ec) && !ec) {
+            g_ffmpeg_executable = p.string();
+            g_ffmpeg_available = true;
+            return true;
+        }
+    }
+
+    return false;
+#else
+    g_ffmpeg_available = (std::system("ffmpeg -version >/dev/null 2>&1") == 0);
+    if (g_ffmpeg_available) g_ffmpeg_executable = "ffmpeg";
+    return g_ffmpeg_available;
+#endif
+}
+
+void stopLiveRecording(bool keep_notice = true) {
+    if (!g_record_pipe) {
+        g_recording = false;
+        return;
+    }
+
+#ifdef _WIN32
+    const int rc = _pclose(g_record_pipe);
+#else
+    const int rc = pclose(g_record_pipe);
+#endif
+    g_record_pipe = nullptr;
+    g_record_rgba_buffer.clear();
+    g_recording = false;
+
+    if (!keep_notice) return;
+
+    if (rc == 0 && !g_record_last_video_path.empty()) {
+        setRecordingNotice("MP4 saved -> " + g_record_last_video_path);
+        std::cout << "[recording] MP4 saved: " << g_record_last_video_path << "\n";
+    } else if (rc == 0) {
+        setRecordingNotice("REC OFF");
+    } else {
+        setRecordingNotice("MP4 export failed (ffmpeg)");
+        std::cout << "[recording] ffmpeg exited with code " << rc << "\n";
+    }
+}
+
+bool startLiveRecording() {
+    namespace fs = std::filesystem;
+
+    ensureCaptureDir();
+    if (!checkFfmpegAvailable()) {
+        setRecordingNotice("REC error: ffmpeg not found");
+        std::cout << "[recording] ffmpeg not found (PATH/WinGet)\n";
+        return false;
+    }
+
+    GLint viewport[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    g_record_viewport_x = viewport[0];
+    g_record_viewport_y = viewport[1];
+    g_record_width = viewport[2];
+    g_record_height = viewport[3];
+
+    if (g_record_width <= 0 || g_record_height <= 0) {
+        setRecordingNotice("REC error: invalid viewport");
+        return false;
+    }
+
+    g_record_session_tag = makeRecordingSessionTag();
+    std::error_code ec;
+    const fs::path out_rel = fs::path(g_record_dir) / (g_record_session_tag + ".mp4");
+    const fs::path out_abs = fs::absolute(out_rel, ec);
+    g_record_last_video_path = ec ? out_rel.string() : out_abs.string();
+
+    std::ostringstream cmd;
+    cmd << "\"" << g_ffmpeg_executable << "\""
+        << " -y -hide_banner -loglevel error"
+        << " -f rawvideo -pixel_format rgba"
+        << " -video_size " << g_record_width << "x" << g_record_height
+        << " -framerate " << kRecordFps
+        << " -i -"
+        << " -vf vflip"
+        << " -an -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p"
+        << " \"" << g_record_last_video_path << "\"";
+
+#ifdef _WIN32
+    g_record_pipe = _popen(cmd.str().c_str(), "wb");
+#else
+    g_record_pipe = popen(cmd.str().c_str(), "w");
+#endif
+    if (!g_record_pipe) {
+        setRecordingNotice("REC error: cannot start ffmpeg");
+        std::cout << "[recording] failed to start ffmpeg process\n";
+        return false;
+    }
+
+    g_record_rgba_buffer.assign(static_cast<size_t>(g_record_width) * static_cast<size_t>(g_record_height) * 4U, 0U);
+    g_record_frame = 0;
+    g_record_next_capture_tp = std::chrono::steady_clock::now();
+    g_recording = true;
+    setRecordingNotice("REC ON -> " + g_record_last_video_path);
+    std::cout << "[recording] writing live MP4: " << g_record_last_video_path
+              << " | ffmpeg=" << g_ffmpeg_executable << "\n";
+    return true;
+}
+
+bool captureLiveVideoFrame() {
+    if (!g_record_pipe || g_record_width <= 0 || g_record_height <= 0) {
+        return false;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now < g_record_next_capture_tp) {
+        return true;
+    }
+    while (g_record_next_capture_tp <= now) {
+        g_record_next_capture_tp += kRecordFrameInterval;
+    }
+
+    GLint viewport[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    if (viewport[0] != g_record_viewport_x || viewport[1] != g_record_viewport_y ||
+        viewport[2] != g_record_width || viewport[3] != g_record_height) {
+        setRecordingNotice("REC stopped: viewport changed");
+        std::cout << "[recording] viewport changed during recording; stopping.\n";
+        return false;
+    }
+
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(g_record_viewport_x, g_record_viewport_y,
+                 static_cast<GLsizei>(g_record_width), static_cast<GLsizei>(g_record_height),
+                 GL_RGBA, GL_UNSIGNED_BYTE, g_record_rgba_buffer.data());
+
+    const size_t bytes = g_record_rgba_buffer.size();
+    const size_t written = std::fwrite(g_record_rgba_buffer.data(), 1, bytes, g_record_pipe);
+    if (written != bytes) {
+        setRecordingNotice("REC write failed");
+        std::cout << "[recording] failed to write frame to ffmpeg pipe\n";
+        return false;
+    }
+
+    ++g_record_frame;
+    return true;
 }
 
 void logAudioEvent(const std::string& msg) {
@@ -343,6 +633,32 @@ std::string resolveObstacleTexturePath() {
     return cached;
 }
 
+std::string resolvePacmanTexturePath(const std::string& filename) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path cwd = fs::current_path(ec);
+
+    std::vector<fs::path> bases;
+    bases.push_back(cwd);
+    if (!g_exe_dir.empty()) {
+        bases.push_back(g_exe_dir);
+        bases.push_back(g_exe_dir.parent_path());
+        bases.push_back(g_exe_dir.parent_path().parent_path());
+    }
+
+    std::sort(bases.begin(), bases.end());
+    bases.erase(std::unique(bases.begin(), bases.end()), bases.end());
+
+    for (const auto& b : bases) {
+        if (b.empty()) continue;
+        const fs::path p = b / "pacman_ui_kit" / filename;
+        if (fs::exists(p, ec) && !ec) {
+            return p.string();
+        }
+    }
+    return {};
+}
+
 static int manhattan(const grid::Point& a, const grid::Point& b) {
     return std::abs(a.x - b.x) + std::abs(a.y - b.y);
 }
@@ -398,6 +714,13 @@ public:
         t.fill_color[2] = 0.20f;
         t.fill_opacity = 0.85f;
         t.outline_opacity = 0.0f;
+
+        if (isPacmanThemeActive() && !g_pacman_pellet_texture.empty()) {
+            t.texture = g_pacman_pellet_texture;
+            t.fill_opacity = 1.0f;
+            graphics::drawRect(cell_.x + 0.5f, cell_.y + 0.5f + kHudHeight, 0.44f, 0.44f, t);
+            return;
+        }
 
         graphics::drawDisk(cell_.x + 0.5f, cell_.y + 0.5f + kHudHeight, 0.22f, t);
     }
@@ -711,7 +1034,11 @@ public:
 
         graphics::Brush agent;
         float rgb[3];
-        agentColor(agent_.id(), rgb);
+        if (isPacmanThemeActive()) {
+            pacmanAgentColor(agent_.id(), rgb);
+        } else {
+            agentColor(agent_.id(), rgb);
+        }
         agent.fill_color[0] = rgb[0];
         agent.fill_color[1] = rgb[1];
         agent.fill_color[2] = rgb[2];
@@ -727,6 +1054,20 @@ public:
         }
 
         const auto& pos = agent_.position();
+
+        if (isPacmanThemeActive()) {
+            const std::string* tex = pacmanAgentTextureForId(agent_.id());
+            if (tex) {
+                agent.texture = *tex;
+                agent.fill_color[0] = 1.0f;
+                agent.fill_color[1] = 1.0f;
+                agent.fill_color[2] = 1.0f;
+                agent.fill_opacity = 1.0f;
+                graphics::drawRect(pos.x + 0.5f, pos.y + 0.5f + kHudHeight, 0.78f, 0.78f, agent);
+                return;
+            }
+        }
+
         graphics::drawDisk(pos.x + 0.5f, pos.y + 0.5f + kHudHeight, 0.35f, agent);
     }
 
@@ -832,9 +1173,13 @@ void drawWorld(const grid::GlobalState& state) {
     obstacle.outline_color[2] = 0.06f;
     obstacle.outline_opacity = 0.85f;
     obstacle.outline_width = 2.0f;
-    if (!g_obstacle_texture.empty()) {
+    const std::string& obstacle_texture = (isPacmanThemeActive() && !g_pacman_wall_texture.empty())
+        ? g_pacman_wall_texture
+        : g_obstacle_texture;
+
+    if (!obstacle_texture.empty()) {
         // Το SGG υποστηρίζει PNG textures με ανάμιξη (blend) με το fill color.
-        obstacle.texture = g_obstacle_texture;
+        obstacle.texture = obstacle_texture;
         obstacle.fill_opacity = 0.85f;
         obstacle.outline_opacity = 0.70f;
     } else {
@@ -849,10 +1194,17 @@ void drawWorld(const grid::GlobalState& state) {
     }
 
     graphics::Brush free_cell;
-    free_cell.fill_color[0] = 0.92f;
-    free_cell.fill_color[1] = 0.92f;
-    free_cell.fill_color[2] = 0.95f;
-    free_cell.fill_opacity = 0.09f;
+    if (isPacmanThemeActive()) {
+        free_cell.fill_color[0] = 0.05f;
+        free_cell.fill_color[1] = 0.05f;
+        free_cell.fill_color[2] = 0.12f;
+        free_cell.fill_opacity = 0.32f;
+    } else {
+        free_cell.fill_color[0] = 0.92f;
+        free_cell.fill_color[1] = 0.92f;
+        free_cell.fill_color[2] = 0.95f;
+        free_cell.fill_opacity = 0.09f;
+    }
     free_cell.outline_opacity = 0.0f;
 
     for (int y = 0; y < h; ++y) {
@@ -982,9 +1334,10 @@ void drawHud(const grid::GlobalState& state) {
             ? ("> " + std::to_string(state.match_duration_sec) + "s | " + currentDemoMapLabel())
             : (">  " + std::to_string(state.match_duration_sec) + "s   |   Map: " + currentDemoMapLabel());
 
+        const float kSetupYOffset = 0.12f;
         const float kPanelTextX = compact ? 0.78f : 0.92f;
-        const float kHeaderY    = 0.55f;   // τίτλος «SETUP» πιο ψηλά
-        const float kLineY0     = compact ? 0.98f : 1.28f;   // πρώτη γραμμή περιεχομένου
+        const float kHeaderY    = 0.85f + kSetupYOffset;   // τίτλος «SETUP» πιο ψηλά
+        const float kLineY0     = (compact ? 0.98f : 1.28f) + kSetupYOffset;   // πρώτη γραμμή περιεχομένου
         const float kLineDY     = 0.62f;   // σταθερό line-spacing που χωράει καθαρά 7 γραμμές
         const float kTextSize     = compact ? 0.58f : 0.72f;
         const float kTextSizeEmph = compact ? 0.66f : 0.80f;
@@ -1005,22 +1358,23 @@ void drawHud(const grid::GlobalState& state) {
             float panel_w = max_text_w + padding;
             panel_w = std::min(panel_w, std::max(compact ? 20.0f : 16.0f, state.map.width() * (compact ? 0.72f : 0.58f)));
             panel_w = std::min(panel_w, state.map.width() - 1.0f);
-            // 7 γραμμές περιεχομένου + header, κρατώντας safe margin μέσα στο HUD.
-            const float panel_h  = 6.95f;
+            // Height κοντά στο πραγματικό περιεχόμενο ώστε το περίγραμμα να μη μένει μισοάδειο.
+            const float panel_h  = compact ? 4.95f : 5.15f;
             const float panel_left = compact ? 0.35f : 0.55f;
             const float panel_cx = panel_left + panel_w * 0.5f;
-            const float panel_cy = kHudHeight * 0.5f;
+            const float panel_top = 0.08f;
+            const float panel_cy = panel_top + panel_h * 0.5f;
 
             graphics::Brush panel;
             panel.fill_color[0] = 0.0f;
             panel.fill_color[1] = 0.0f;
             panel.fill_color[2] = 0.0f;
             panel.fill_opacity = 0.45f;
-            panel.outline_color[0] = 1.0f;
-            panel.outline_color[1] = 1.0f;
-            panel.outline_color[2] = 1.0f;
-            panel.outline_opacity = 0.22f;
-            panel.outline_width = 0.06f;
+            panel.outline_color[0] = 0.95f;
+            panel.outline_color[1] = 0.80f;
+            panel.outline_color[2] = 0.30f;
+            panel.outline_opacity = 0.85f;
+            panel.outline_width = 5.0f;
             graphics::drawRect(panel_cx, panel_cy, panel_w, panel_h, panel);
 
             // Accent bar στα αριστερά.
@@ -1038,7 +1392,7 @@ void drawHud(const grid::GlobalState& state) {
             sep.fill_color[2] = 0.20f;
             sep.fill_opacity = 0.45f;
             sep.outline_opacity = 0.0f;
-            graphics::drawRect(panel_left + panel_w * 0.5f, 1.12f, panel_w - 0.45f, 0.04f, sep);
+            graphics::drawRect(panel_left + panel_w * 0.5f, panel_top + 0.95f, panel_w - 0.45f, 0.04f, sep);
         }
 
         graphics::Brush accent;
@@ -1067,8 +1421,8 @@ void drawHud(const grid::GlobalState& state) {
             graphics::setFont(g_font_display);
         }
         const std::string title = "GRID WORLD";
-        const float title_size = compact ? 0.86f : 1.05f;
-        graphics::drawText(std::max(0.6f, cx - approxTextHalfWidth(title, title_size)), 2.90f, title_size, title, text);
+        const float title_size = compact ? 0.82f : 0.98f;
+        graphics::drawText(std::max(0.6f, cx - approxTextHalfWidth(title, title_size)), 2.45f, title_size, title, text);
         if (!g_font_ui.empty()) {
             graphics::setFont(g_font_ui);
         }
@@ -1158,27 +1512,40 @@ void drawHud(const grid::GlobalState& state) {
     constexpr float kHudLine3Y = 3.08f;
     constexpr float kHudLine4Y = 3.72f;
 
-    const float score_panel_w_ref = 6.0f;
-    const float score_panel_left_ref = std::max(0.5f, static_cast<float>(state.map.width()) - score_panel_w_ref - 0.5f);
+    constexpr float kHudPanelTop = 0.35f;
+    constexpr float kHudPanelHeight = 3.8f;
+    constexpr float kHudPanelSideMargin = 0.45f;
+    constexpr float kHudPanelGap = 0.45f;
+    constexpr float kScorePanelWidth = 6.0f;
+    const float hud_width = static_cast<float>(state.map.width());
+    constexpr float kScorePanelOffsetX = 0.12f;
+    constexpr float kScorePanelOffsetY = 0.10f;
+    const float score_panel_left_ref = std::max(kHudPanelSideMargin, hud_width - kScorePanelWidth - kHudPanelSideMargin + kScorePanelOffsetX);
+    const float score_panel_center_x = score_panel_left_ref + kScorePanelWidth * 0.5f;
+    const float shared_panel_center_y = kHudPanelTop + kHudPanelHeight * 0.5f;
+    const float score_panel_center_y = shared_panel_center_y + kScorePanelOffsetY;
+
+    auto makeHudPanelBrush = []() {
+        graphics::Brush panel;
+        panel.fill_color[0] = 0.0f;
+        panel.fill_color[1] = 0.0f;
+        panel.fill_color[2] = 0.0f;
+        panel.fill_opacity = 0.42f;
+        panel.outline_opacity = 0.85f;
+        panel.outline_width = 5.0f;
+        panel.outline_color[0] = 0.95f;
+        panel.outline_color[1] = 0.80f;
+        panel.outline_color[2] = 0.30f;
+        return panel;
+    };
 
     // Info panel (αριστερά), οπτικά ευθυγραμμισμένο με score panel.
     {
-        const float panel_left = 0.45f;
-        const float panel_right = std::max(panel_left + 10.0f, score_panel_left_ref - 0.45f);
+        const float panel_left = kHudPanelSideMargin;
+        const float panel_right = std::max(panel_left + 10.0f, score_panel_left_ref - kHudPanelGap);
         const float panel_w = panel_right - panel_left;
-        const float panel_h = kHudHeight - 0.7f;
-
-        graphics::Brush info_panel;
-        info_panel.fill_color[0] = 0.0f;
-        info_panel.fill_color[1] = 0.0f;
-        info_panel.fill_color[2] = 0.0f;
-        info_panel.fill_opacity = 0.42f;
-        info_panel.outline_opacity = 0.35f;
-        info_panel.outline_width = 1.5f;
-        info_panel.outline_color[0] = 0.95f;
-        info_panel.outline_color[1] = 0.80f;
-        info_panel.outline_color[2] = 0.30f;
-        graphics::drawRect(panel_left + panel_w * 0.5f, kHudHeight * 0.5f, panel_w, panel_h, info_panel);
+        graphics::Brush info_panel = makeHudPanelBrush();
+        graphics::drawRect(panel_left + panel_w * 0.5f, shared_panel_center_y, panel_w, kHudPanelHeight, info_panel);
     }
 
     const float hud_text_x = 0.62f;
@@ -1188,6 +1555,20 @@ void drawHud(const grid::GlobalState& state) {
     hud_shadow.fill_color[2] = 0.0f;
     hud_shadow.fill_opacity = 0.78f;
     hud_shadow.outline_opacity = 0.0f;
+    const float hud_text_max_w = std::max(9.5f, score_panel_left_ref - hud_text_x - kHudPanelGap);
+
+    auto fitToHudWidth = [&](const std::string& s, float size) -> std::string {
+        if (approxTextHalfWidth(s, size) * 2.0f <= hud_text_max_w) return s;
+        std::string out = s;
+        while (out.size() > 8) {
+            out.pop_back();
+            const std::string cand = out + "...";
+            if (approxTextHalfWidth(cand, size) * 2.0f <= hud_text_max_w) {
+                return cand;
+            }
+        }
+        return "...";
+    };
 
     // Γραμμή 1: κατάσταση + tick + targets + χρόνος.
     {
@@ -1202,9 +1583,12 @@ void drawHud(const grid::GlobalState& state) {
             line1 += std::string(" | CPU ") + cpuDifficultyName(state);
         }
         line1 += std::string(" | REC ") + (g_recording ? "ON" : "OFF");
+        if (g_recording || g_record_frame > 0) {
+            line1 += " #" + std::to_string(g_record_frame);
+        }
         const int secs_left = static_cast<int>(std::ceil(state.match_time_left_ms / 1000.0f));
         line1 += " | " + formatTimeMMSS(secs_left);
-        drawTextShadowed(hud_text_x, kHudLine1Y, kFontMain, line1, text, hud_shadow);
+        drawTextShadowed(hud_text_x, kHudLine1Y, kFontMain, fitToHudWidth(line1, kFontMain), text, hud_shadow);
     }
 
     // Γραμμή 2: επιλογή + autopilot + A* analytics.
@@ -1232,7 +1616,7 @@ void drawHud(const grid::GlobalState& state) {
         }
 
         line2 += " | Map " + currentDemoMapLabel();
-        drawTextShadowed(hud_text_x, kHudLine2Y, kFontSub + 0.03f, line2, text, hud_shadow);
+        drawTextShadowed(hud_text_x, kHudLine2Y, kFontSub + 0.03f, fitToHudWidth(line2, kFontSub + 0.03f), text, hud_shadow);
     }
 
     // Γραμμή 2.5: CPU AI difficulty + performance tracking
@@ -1252,12 +1636,12 @@ void drawHud(const grid::GlobalState& state) {
         
         cpu_line += " | Probe=" + std::to_string(cpuProbeLimit(state));
 
-        drawTextShadowed(hud_text_x, kHudLine25Y, kFontSub + 0.03f, cpu_line, text, hud_shadow);
+        drawTextShadowed(hud_text_x, kHudLine25Y, kFontSub + 0.03f, fitToHudWidth(cpu_line, kFontSub + 0.03f), text, hud_shadow);
     }
 
     // Γραμμή 3+4: οδηγός κουμπιών gameplay στη μπάρα HUD (σπάει σε 2 γραμμές για αποφυγή overlap).
     {
-        std::string line3a = "[SPACE] Pause/Run | [N] Step 1 tick | [-]/[+] Speed | [F5] Rec";
+        std::string line3a = "[SPACE] Pause/Run | [N] Step 1 tick | [-]/[+] Speed | [F5/V] Rec";
         std::string line3b = "[P] AP | [R] Restart | [M] Next map";
         line3b += (state.cpu_agent_id >= 0) ? " | [C] CPU" : "";
         line3b += " | [Q] Quit";
@@ -1274,8 +1658,16 @@ void drawHud(const grid::GlobalState& state) {
         shadow.fill_opacity = 0.75f;
         shadow.outline_opacity = 0.0f;
 
-        drawKeyAccentLine(hud_text_x, kHudLine3Y, 0.62f, line3a, text, accent, shadow);
-        drawKeyAccentLine(hud_text_x, kHudLine4Y, 0.62f, line3b, text, accent, shadow);
+        drawKeyAccentLine(hud_text_x, kHudLine3Y, 0.62f, fitToHudWidth(line3a, 0.62f), text, accent, shadow);
+        drawKeyAccentLine(hud_text_x, kHudLine4Y, 0.62f, fitToHudWidth(line3b, 0.62f), text, accent, shadow);
+    }
+
+    if (g_record_notice_ms > 0.0f && !g_record_notice.empty()) {
+        graphics::Brush rec_text = text;
+        rec_text.fill_color[0] = 1.0f;
+        rec_text.fill_color[1] = 0.93f;
+        rec_text.fill_color[2] = 0.35f;
+        drawTextShadowed(hud_text_x, 4.42f, 0.52f, fitToHudWidth(g_record_notice, 0.52f), rec_text, hud_shadow);
     }
 
     // Το scoreboard «ζει» στη λωρίδα HUD (εκτός του grid).
@@ -1289,33 +1681,26 @@ void drawHud(const grid::GlobalState& state) {
         }
         std::sort(agents.begin(), agents.end(), [](const AgentEntity* a, const AgentEntity* b) { return a->id() < b->id(); });
 
-        const float panel_w = 6.0f;
-        const float panel_h = kHudHeight - 0.7f;
-        const float panel_left = std::max(0.5f, static_cast<float>(state.map.width()) - panel_w - 0.5f);
+        const float panel_w = kScorePanelWidth;
+        const float panel_left = score_panel_left_ref;
         const float text_left = panel_left + 0.28f;
-        const float title_y = 0.88f;
-        const float rows_top = 1.78f;
+        const float score_panel_top = score_panel_center_y - kHudPanelHeight * 0.5f;
+        const float title_y = score_panel_top + 0.50f;
+        const float rows_top = score_panel_top + 1.42f;
         const float row_h = 0.62f;
 
         // Panel αντίθεσης πίσω από το scoreboard.
-        graphics::Brush panel;
-        panel.fill_color[0] = 0.0f;
-        panel.fill_color[1] = 0.0f;
-        panel.fill_color[2] = 0.0f;
-        panel.fill_opacity = 0.42f;
-        panel.outline_opacity = 0.35f;
-        panel.outline_width = 1.5f;
-        panel.outline_color[0] = 0.95f;
-        panel.outline_color[1] = 0.80f;
-        panel.outline_color[2] = 0.30f;
-        graphics::drawRect(panel_left + panel_w * 0.5f, kHudHeight * 0.5f, panel_w, panel_h, panel);
+        graphics::Brush panel = makeHudPanelBrush();
+        graphics::drawRect(score_panel_center_x, score_panel_center_y, panel_w, kHudPanelHeight, panel);
 
         graphics::Brush header = text;
         header.fill_opacity = 0.95f;
         if (!g_font_display.empty()) {
             graphics::setFont(g_font_display);
         }
-        graphics::drawText(text_left, title_y, kFontScoreHeader, "SCORE", header);
+        constexpr float kScoreTitleOffsetX = 0.80f;
+        constexpr float kScoreTitleOffsetY = 0.32f;
+        graphics::drawText(text_left + kScoreTitleOffsetX, title_y + kScoreTitleOffsetY, kFontScoreHeader, "SCORE", header);
         if (!g_font_ui.empty()) {
             graphics::setFont(g_font_ui);
         }
@@ -1327,12 +1712,16 @@ void drawHud(const grid::GlobalState& state) {
         sep.fill_color[2] = 0.20f;
         sep.fill_opacity = 0.55f;
         sep.outline_opacity = 0.0f;
-        graphics::drawRect(panel_left + panel_w * 0.5f, 1.42f, panel_w - 0.45f, 0.045f, sep);
+        graphics::drawRect(panel_left + panel_w * 0.5f, score_panel_top + 1.06f, panel_w - 0.45f, 0.045f, sep);
 
         for (size_t i = 0; i < agents.size(); ++i) {
             const auto* ae = agents[i];
             float rgb[3];
-            agentColor(ae->id(), rgb);
+            if (isPacmanThemeActive()) {
+                pacmanAgentColor(ae->id(), rgb);
+            } else {
+                agentColor(ae->id(), rgb);
+            }
 
             // Απαλό row background για ομοιόμορφη σάρωση γραμμών.
             graphics::Brush row_bg;
@@ -1392,22 +1781,91 @@ grid::Point nearestFreeCell(const grid::Map& map, grid::Point desired) {
     return {0, 0};
 }
 
+grid::Point nearestFreeCellAvoiding(const grid::Map& map, grid::Point desired, const std::unordered_set<int>& banned_keys) {
+    const int w = map.width();
+    const int h = map.height();
+    if (w <= 0 || h <= 0) return {0, 0};
+
+    auto key = [&](const grid::Point& p) { return p.y * w + p.x; };
+
+    desired.x = std::clamp(desired.x, 0, w - 1);
+    desired.y = std::clamp(desired.y, 0, h - 1);
+    if (map.isFree(desired) && !banned_keys.count(key(desired))) return desired;
+
+    const int max_r = std::max(w, h);
+    for (int r = 1; r <= max_r; ++r) {
+        for (int dy = -r; dy <= r; ++dy) {
+            const int y = desired.y + dy;
+            const int rem = r - std::abs(dy);
+            const int xs[2] = { desired.x - rem, desired.x + rem };
+            for (int i = 0; i < 2; ++i) {
+                const grid::Point p{xs[i], y};
+                if (p.x < 0 || p.y < 0 || p.x >= w || p.y >= h) continue;
+                if (!map.isFree(p)) continue;
+                if (banned_keys.count(key(p))) continue;
+                return p;
+            }
+        }
+    }
+
+    return nearestFreeCell(map, desired);
+}
+
+bool hasPathBetween(const grid::Map& map, const grid::Point& a, const grid::Point& b) {
+    if (!map.isFree(a) || !map.isFree(b)) return false;
+    const auto p = grid::findPath(map, a, b);
+    return p.has_value() && !p->empty();
+}
+
+grid::Point nearestReachableGoal(const grid::Map& map, const grid::Point& start, grid::Point desired) {
+    desired = nearestFreeCell(map, desired);
+    if (hasPathBetween(map, start, desired)) return desired;
+
+    const int w = map.width();
+    const int h = map.height();
+    const int max_r = std::max(w, h);
+    for (int r = 1; r <= max_r; ++r) {
+        for (int dy = -r; dy <= r; ++dy) {
+            const int y = desired.y + dy;
+            const int rem = r - std::abs(dy);
+            const int xs[2] = { desired.x - rem, desired.x + rem };
+            for (int i = 0; i < 2; ++i) {
+                const grid::Point p{xs[i], y};
+                if (p.x < 0 || p.y < 0 || p.x >= w || p.y >= h) continue;
+                if (!map.isFree(p)) continue;
+                if (hasPathBetween(map, start, p)) return p;
+            }
+        }
+    }
+
+    // Εγγυημένα reachable fallback: το start cell.
+    return start;
+}
+
 bool loadAgentsConfig(const std::string& cfgPath, const grid::Map& map, std::vector<std::unique_ptr<grid::Entity>>& out_entities) {
     std::ifstream in(cfgPath);
     if (!in) return false;
 
     int id, sx, sy, gx, gy;
     out_entities.clear();
+    std::unordered_set<int> used_starts;
+    auto key = [&](const grid::Point& p) { return p.y * map.width() + p.x; };
+
     while (in >> id >> sx >> sy >> gx >> gy) {
         grid::Point start{sx, sy};
         grid::Point goal{gx, gy};
-        start = nearestFreeCell(map, start);
-        goal = nearestFreeCell(map, goal);
+        start = nearestFreeCellAvoiding(map, start, used_starts);
+        used_starts.insert(key(start));
+        goal = nearestReachableGoal(map, start, goal);
+
         grid::Agent agent{id, start, goal};
         out_entities.push_back(std::make_unique<AgentEntity>(std::move(agent)));
     }
     return true;
 }
+
+std::unordered_set<int> computeReachableCellsFromAgents(const grid::GlobalState& state);
+bool cellOccupiedByAgent(const grid::GlobalState& state, const grid::Point& cell);
 
 void collectTargets(grid::GlobalState& state) {
     if (state.targets_total <= 0) return;
@@ -1453,6 +1911,7 @@ void collectTargets(grid::GlobalState& state) {
         static std::mt19937 rng(std::random_device{}());
         std::uniform_int_distribution<int> dx(0, std::max(0, state.map.width() - 1));
         std::uniform_int_distribution<int> dy(0, std::max(0, state.map.height() - 1));
+        const std::unordered_set<int> reachable = computeReachableCellsFromAgents(state);
 
         std::unordered_set<int> used;
         used.reserve(state.entities.size() + static_cast<size_t>(removed));
@@ -1474,6 +1933,8 @@ void collectTargets(grid::GlobalState& state) {
             grid::Point p{dx(rng), dy(rng)};
             if (!state.map.isFree(p)) continue;
             const int k = key(p);
+            if (!reachable.empty() && !reachable.count(k)) continue;
+            if (cellOccupiedByAgent(state, p)) continue;
             if (used.count(k)) continue;
             used.insert(k);
             targets.push_back(std::make_unique<TargetEntity>(p));
@@ -1494,6 +1955,40 @@ bool cellOccupiedByAgent(const grid::GlobalState& state, const grid::Point& cell
     return false;
 }
 
+std::unordered_set<int> computeReachableCellsFromAgents(const grid::GlobalState& state) {
+    std::unordered_set<int> reachable;
+    const int w = state.map.width();
+    const int h = state.map.height();
+    if (w <= 0 || h <= 0) return reachable;
+
+    auto key = [&](const grid::Point& p) -> int { return p.y * w + p.x; };
+    std::vector<grid::Point> queue;
+    queue.reserve(static_cast<size_t>(w * h));
+
+    for (const auto& e : state.entities) {
+        const auto* ae = dynamic_cast<const AgentEntity*>(e.get());
+        if (!ae) continue;
+        const grid::Point s = ae->position();
+        if (s.x < 0 || s.y < 0 || s.x >= w || s.y >= h) continue;
+        if (!state.map.isFree(s)) continue;
+        if (reachable.insert(key(s)).second) {
+            queue.push_back(s);
+        }
+    }
+
+    for (size_t i = 0; i < queue.size(); ++i) {
+        const auto p = queue[i];
+        for (const auto& n : state.map.neighbors(p)) {
+            const int k = key(n);
+            if (reachable.insert(k).second) {
+                queue.push_back(n);
+            }
+        }
+    }
+
+    return reachable;
+}
+
 void spawnInitialTargets(grid::GlobalState& state, int count) {
     // Αφαιρούμε τυχόν υπάρχοντα targets πριν κάνουμε spawn καινούργια (χρήσιμο όταν αλλάζει η διάρκεια του match).
     for (auto it = state.entities.begin(); it != state.entities.end();) {
@@ -1511,6 +2006,7 @@ void spawnInitialTargets(grid::GlobalState& state, int count) {
     std::mt19937 rng(1337);
     std::uniform_int_distribution<int> dx(0, std::max(0, state.map.width() - 1));
     std::uniform_int_distribution<int> dy(0, std::max(0, state.map.height() - 1));
+    const std::unordered_set<int> reachable = computeReachableCellsFromAgents(state);
 
     auto key = [&](const grid::Point& p) -> int { return p.y * state.map.width() + p.x; };
     std::unordered_set<int> used;
@@ -1524,8 +2020,9 @@ void spawnInitialTargets(grid::GlobalState& state, int count) {
         ++attempts;
         grid::Point p{dx(rng), dy(rng)};
         if (!state.map.isFree(p)) continue;
-        if (cellOccupiedByAgent(state, p)) continue;
         const int k = key(p);
+        if (!reachable.empty() && !reachable.count(k)) continue;
+        if (cellOccupiedByAgent(state, p)) continue;
         if (used.count(k)) continue;
         used.insert(k);
         targets.push_back(std::make_unique<TargetEntity>(p));
@@ -1583,6 +2080,10 @@ void draw_callback() {
     drawWorld(*state);
     state->draw();
     drawHud(*state);
+
+    if (g_recording && !captureLiveVideoFrame()) {
+        stopLiveRecording();
+    }
 }
 
 void update_callback(float ms) {
@@ -1597,6 +2098,13 @@ void update_callback(float ms) {
             if (fps_smoothed <= 0.0f) fps_smoothed = inst;
             else fps_smoothed = fps_smoothed * 0.90f + inst * 0.10f;
             state->hud_fps = fps_smoothed;
+        }
+    }
+
+    if (g_record_notice_ms > 0.0f) {
+        g_record_notice_ms = std::max(0.0f, g_record_notice_ms - ms);
+        if (g_record_notice_ms <= 0.0f) {
+            g_record_notice.clear();
         }
     }
 
@@ -1617,6 +2125,7 @@ void update_callback(float ms) {
     static bool prev_minus = false;
     static bool prev_plus = false;
     static bool prev_f5 = false;
+    static bool prev_v = false;
 
     // Κατάσταση ήχων για countdown / τέλος / νικητή.
     static bool played_countdown[4] = {false, false, false, false}; // indices 1..3
@@ -1635,6 +2144,9 @@ void update_callback(float ms) {
 
     // Καθαρό quit, για να μην μείνει η διεργασία να τρέχει 
     if (graphics::getKeyState(graphics::SCANCODE_ESCAPE) || graphics::getKeyState(graphics::SCANCODE_Q)) {
+        if (g_recording) {
+            stopLiveRecording(false);
+        }
         graphics::stopMessageLoop();
         return;
     }
@@ -1689,17 +2201,19 @@ void update_callback(float ms) {
     const bool cur_minus = graphics::getKeyState(graphics::SCANCODE_MINUS) || graphics::getKeyState(graphics::SCANCODE_KP_MINUS);
     const bool cur_plus = graphics::getKeyState(graphics::SCANCODE_EQUALS) || graphics::getKeyState(graphics::SCANCODE_KP_PLUS);
     const bool cur_f5 = graphics::getKeyState(graphics::SCANCODE_F5);
+    // Fallback key for laptops/OS setups where function keys are intercepted.
+    const bool cur_v = graphics::getKeyState(graphics::SCANCODE_V);
     if (cur_minus && !prev_minus) {
         state->tick_delay_ms = std::min(2000, state->tick_delay_ms + 50);
     }
     if (cur_plus && !prev_plus) {
         state->tick_delay_ms = std::max(10, state->tick_delay_ms - 50);
     }
-    if (cur_f5 && !prev_f5) {
-        g_recording = !g_recording;
-        if (g_recording) {
-            ensureCaptureDir();
-            g_record_frame = 0;
+    if ((cur_f5 || cur_v) && !(prev_f5 || prev_v)) {
+        if (!g_recording) {
+            (void)startLiveRecording();
+        } else {
+            stopLiveRecording();
         }
     }
 
@@ -1711,6 +2225,7 @@ void update_callback(float ms) {
     prev_minus = cur_minus;
     prev_plus = cur_plus;
     prev_f5 = cur_f5;
+    prev_v = cur_v;
 
     // Setup / start του match.
     const bool cur_enter = graphics::getKeyState(graphics::SCANCODE_RETURN) || graphics::getKeyState(graphics::SCANCODE_RETURN2);
@@ -2096,12 +2611,6 @@ void update_callback(float ms) {
         // Αφού ενημερωθούν όλα τα entities για το tick, επιλύουμε τη συλλογή targets.
         collectTargets(*state);
 
-        // Recording scaffold: κρατάμε frame index ανά simulation tick.
-        // Το πραγματικό frame export (stb/ffmpeg) θα δέσει εδώ.
-        if (g_recording) {
-            ++g_record_frame;
-        }
-
         state->accumulator_ms -= static_cast<float>(state->tick_delay_ms);
 
         if (state->step_once) {
@@ -2188,6 +2697,12 @@ int main(int argc, char** argv) {
         g_font_ui = resolveFontPath();
         g_font_display = resolveDisplayFontPath();
         g_obstacle_texture = resolveObstacleTexturePath();
+        g_pacman_wall_texture = resolvePacmanTexturePath("wall.png");
+        g_pacman_player_texture = resolvePacmanTexturePath("player_pacman.png");
+        g_pacman_ghost_red_texture = resolvePacmanTexturePath("ghost_red.png");
+        g_pacman_ghost_pink_texture = resolvePacmanTexturePath("ghost_pink.png");
+        g_pacman_ghost_cyan_texture = resolvePacmanTexturePath("ghost_cyan.png");
+        g_pacman_pellet_texture = resolvePacmanTexturePath("pellet.png");
 
         g_sfx_countdown = resolveCountdownSoundPath();
         g_sfx_end = resolveEndSoundPath();
