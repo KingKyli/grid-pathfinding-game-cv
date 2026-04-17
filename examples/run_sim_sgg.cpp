@@ -1,11 +1,7 @@
 #include <sgg/graphics.h>
 
-#include <GL/glew.h>
-
 #include <algorithm>
 #include <chrono>
-#include <cstdio>
-#include <cstdlib>
 #include <cstdint>
 #include <cmath>
 #include <filesystem>
@@ -60,26 +56,6 @@ static std::vector<std::string> g_demo_maps = {
     "maps/pacman_ms2.json"
 };
 static int g_demo_map_index = 0;
-static bool g_recording = false;
-static int g_record_frame = 0;
-static std::string g_record_dir = "captures";
-static std::string g_record_dir_absolute;
-static std::string g_record_session_tag;
-static std::string g_record_last_video_path;
-static std::string g_record_notice;
-static float g_record_notice_ms = 0.0f;
-static FILE* g_record_pipe = nullptr;
-static int g_record_viewport_x = 0;
-static int g_record_viewport_y = 0;
-static int g_record_width = 0;
-static int g_record_height = 0;
-static std::vector<unsigned char> g_record_rgba_buffer;
-static bool g_ffmpeg_checked = false;
-static bool g_ffmpeg_available = false;
-static std::string g_ffmpeg_executable;
-constexpr int kRecordFps = 30;
-constexpr std::chrono::milliseconds kRecordFrameInterval(1000 / kRecordFps);
-static std::chrono::steady_clock::time_point g_record_next_capture_tp;
 
 std::string currentDemoMapName() {
     namespace fs = std::filesystem;
@@ -227,212 +203,6 @@ std::string resolveSggHitSoundPath() {
     }
 
     return cached;
-}
-
-void ensureCaptureDir() {
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    fs::create_directories(fs::path(g_record_dir), ec);
-    const fs::path abs = fs::absolute(fs::path(g_record_dir), ec);
-    g_record_dir_absolute = ec ? fs::path(g_record_dir).string() : abs.string();
-}
-
-void setRecordingNotice(const std::string& msg) {
-    g_record_notice = msg;
-    g_record_notice_ms = 3500.0f;
-}
-
-std::string makeRecordingSessionTag() {
-    using namespace std::chrono;
-    const auto now_ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
-    return currentDemoMapLabel() + "_" + std::to_string(now_ms);
-}
-
-bool checkFfmpegAvailable() {
-    if (g_ffmpeg_checked) return g_ffmpeg_available;
-
-    g_ffmpeg_checked = true;
-    g_ffmpeg_available = false;
-
-#ifdef _WIN32
-    // 1) Try PATH first.
-    if (std::system("ffmpeg -version >nul 2>&1") == 0) {
-        g_ffmpeg_executable = "ffmpeg";
-        g_ffmpeg_available = true;
-        return true;
-    }
-
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    std::vector<fs::path> candidates;
-
-    const char* local_app_data = std::getenv("LOCALAPPDATA");
-    if (local_app_data && *local_app_data) {
-        const fs::path lad(local_app_data);
-        candidates.push_back(lad / "Microsoft" / "WinGet" / "Links" / "ffmpeg.exe");
-        candidates.push_back(lad / "Microsoft" / "WindowsApps" / "ffmpeg.exe");
-
-        const fs::path packages_dir = lad / "Microsoft" / "WinGet" / "Packages";
-        if (fs::exists(packages_dir, ec) && !ec) {
-            for (const auto& e : fs::directory_iterator(packages_dir, ec)) {
-                if (ec) break;
-                if (!e.is_directory(ec) || ec) continue;
-                const std::string dir_name = e.path().filename().string();
-                if (dir_name.rfind("Gyan.FFmpeg", 0) != 0) continue;
-
-                for (const auto& sub : fs::recursive_directory_iterator(e.path(), ec)) {
-                    if (ec) break;
-                    if (!sub.is_regular_file(ec) || ec) continue;
-                    if (sub.path().filename() == "ffmpeg.exe") {
-                        candidates.push_back(sub.path());
-                    }
-                }
-            }
-        }
-    }
-
-    for (const auto& p : candidates) {
-        if (p.empty()) continue;
-        if (fs::exists(p, ec) && !ec) {
-            g_ffmpeg_executable = p.string();
-            g_ffmpeg_available = true;
-            return true;
-        }
-    }
-
-    return false;
-#else
-    g_ffmpeg_available = (std::system("ffmpeg -version >/dev/null 2>&1") == 0);
-    if (g_ffmpeg_available) g_ffmpeg_executable = "ffmpeg";
-    return g_ffmpeg_available;
-#endif
-}
-
-void stopLiveRecording(bool keep_notice = true) {
-    if (!g_record_pipe) {
-        g_recording = false;
-        return;
-    }
-
-#ifdef _WIN32
-    const int rc = _pclose(g_record_pipe);
-#else
-    const int rc = pclose(g_record_pipe);
-#endif
-    g_record_pipe = nullptr;
-    g_record_rgba_buffer.clear();
-    g_recording = false;
-
-    if (!keep_notice) return;
-
-    if (rc == 0 && !g_record_last_video_path.empty()) {
-        setRecordingNotice("MP4 saved -> " + g_record_last_video_path);
-        std::cout << "[recording] MP4 saved: " << g_record_last_video_path << "\n";
-    } else if (rc == 0) {
-        setRecordingNotice("REC OFF");
-    } else {
-        setRecordingNotice("MP4 export failed (ffmpeg)");
-        std::cout << "[recording] ffmpeg exited with code " << rc << "\n";
-    }
-}
-
-bool startLiveRecording() {
-    namespace fs = std::filesystem;
-
-    ensureCaptureDir();
-    if (!checkFfmpegAvailable()) {
-        setRecordingNotice("REC error: ffmpeg not found");
-        std::cout << "[recording] ffmpeg not found (PATH/WinGet)\n";
-        return false;
-    }
-
-    GLint viewport[4] = {0, 0, 0, 0};
-    glGetIntegerv(GL_VIEWPORT, viewport);
-    g_record_viewport_x = viewport[0];
-    g_record_viewport_y = viewport[1];
-    g_record_width = viewport[2];
-    g_record_height = viewport[3];
-
-    if (g_record_width <= 0 || g_record_height <= 0) {
-        setRecordingNotice("REC error: invalid viewport");
-        return false;
-    }
-
-    g_record_session_tag = makeRecordingSessionTag();
-    std::error_code ec;
-    const fs::path out_rel = fs::path(g_record_dir) / (g_record_session_tag + ".mp4");
-    const fs::path out_abs = fs::absolute(out_rel, ec);
-    g_record_last_video_path = ec ? out_rel.string() : out_abs.string();
-
-    std::ostringstream cmd;
-    cmd << "\"" << g_ffmpeg_executable << "\""
-        << " -y -hide_banner -loglevel error"
-        << " -f rawvideo -pixel_format rgba"
-        << " -video_size " << g_record_width << "x" << g_record_height
-        << " -framerate " << kRecordFps
-        << " -i -"
-        << " -vf vflip"
-        << " -an -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p"
-        << " \"" << g_record_last_video_path << "\"";
-
-#ifdef _WIN32
-    g_record_pipe = _popen(cmd.str().c_str(), "wb");
-#else
-    g_record_pipe = popen(cmd.str().c_str(), "w");
-#endif
-    if (!g_record_pipe) {
-        setRecordingNotice("REC error: cannot start ffmpeg");
-        std::cout << "[recording] failed to start ffmpeg process\n";
-        return false;
-    }
-
-    g_record_rgba_buffer.assign(static_cast<size_t>(g_record_width) * static_cast<size_t>(g_record_height) * 4U, 0U);
-    g_record_frame = 0;
-    g_record_next_capture_tp = std::chrono::steady_clock::now();
-    g_recording = true;
-    setRecordingNotice("REC ON -> " + g_record_last_video_path);
-    std::cout << "[recording] writing live MP4: " << g_record_last_video_path
-              << " | ffmpeg=" << g_ffmpeg_executable << "\n";
-    return true;
-}
-
-bool captureLiveVideoFrame() {
-    if (!g_record_pipe || g_record_width <= 0 || g_record_height <= 0) {
-        return false;
-    }
-
-    const auto now = std::chrono::steady_clock::now();
-    if (now < g_record_next_capture_tp) {
-        return true;
-    }
-    while (g_record_next_capture_tp <= now) {
-        g_record_next_capture_tp += kRecordFrameInterval;
-    }
-
-    GLint viewport[4] = {0, 0, 0, 0};
-    glGetIntegerv(GL_VIEWPORT, viewport);
-    if (viewport[0] != g_record_viewport_x || viewport[1] != g_record_viewport_y ||
-        viewport[2] != g_record_width || viewport[3] != g_record_height) {
-        setRecordingNotice("REC stopped: viewport changed");
-        std::cout << "[recording] viewport changed during recording; stopping.\n";
-        return false;
-    }
-
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(g_record_viewport_x, g_record_viewport_y,
-                 static_cast<GLsizei>(g_record_width), static_cast<GLsizei>(g_record_height),
-                 GL_RGBA, GL_UNSIGNED_BYTE, g_record_rgba_buffer.data());
-
-    const size_t bytes = g_record_rgba_buffer.size();
-    const size_t written = std::fwrite(g_record_rgba_buffer.data(), 1, bytes, g_record_pipe);
-    if (written != bytes) {
-        setRecordingNotice("REC write failed");
-        std::cout << "[recording] failed to write frame to ffmpeg pipe\n";
-        return false;
-    }
-
-    ++g_record_frame;
-    return true;
 }
 
 void logAudioEvent(const std::string& msg) {
@@ -1582,10 +1352,6 @@ void drawHud(const grid::GlobalState& state) {
         if (state.cpu_agent_id >= 0) {
             line1 += std::string(" | CPU ") + cpuDifficultyName(state);
         }
-        line1 += std::string(" | REC ") + (g_recording ? "ON" : "OFF");
-        if (g_recording || g_record_frame > 0) {
-            line1 += " #" + std::to_string(g_record_frame);
-        }
         const int secs_left = static_cast<int>(std::ceil(state.match_time_left_ms / 1000.0f));
         line1 += " | " + formatTimeMMSS(secs_left);
         drawTextShadowed(hud_text_x, kHudLine1Y, kFontMain, fitToHudWidth(line1, kFontMain), text, hud_shadow);
@@ -1641,7 +1407,7 @@ void drawHud(const grid::GlobalState& state) {
 
     // Γραμμή 3+4: οδηγός κουμπιών gameplay στη μπάρα HUD (σπάει σε 2 γραμμές για αποφυγή overlap).
     {
-        std::string line3a = "[SPACE] Pause/Run | [N] Step 1 tick | [-]/[+] Speed | [F5/V] Rec";
+        std::string line3a = "[SPACE] Pause/Run | [N] Step 1 tick | [-]/[+] Speed";
         std::string line3b = "[P] AP | [R] Restart | [M] Next map";
         line3b += (state.cpu_agent_id >= 0) ? " | [C] CPU" : "";
         line3b += " | [Q] Quit";
@@ -1660,14 +1426,6 @@ void drawHud(const grid::GlobalState& state) {
 
         drawKeyAccentLine(hud_text_x, kHudLine3Y, 0.62f, fitToHudWidth(line3a, 0.62f), text, accent, shadow);
         drawKeyAccentLine(hud_text_x, kHudLine4Y, 0.62f, fitToHudWidth(line3b, 0.62f), text, accent, shadow);
-    }
-
-    if (g_record_notice_ms > 0.0f && !g_record_notice.empty()) {
-        graphics::Brush rec_text = text;
-        rec_text.fill_color[0] = 1.0f;
-        rec_text.fill_color[1] = 0.93f;
-        rec_text.fill_color[2] = 0.35f;
-        drawTextShadowed(hud_text_x, 4.42f, 0.52f, fitToHudWidth(g_record_notice, 0.52f), rec_text, hud_shadow);
     }
 
     // Το scoreboard «ζει» στη λωρίδα HUD (εκτός του grid).
@@ -2081,9 +1839,6 @@ void draw_callback() {
     state->draw();
     drawHud(*state);
 
-    if (g_recording && !captureLiveVideoFrame()) {
-        stopLiveRecording();
-    }
 }
 
 void update_callback(float ms) {
@@ -2098,13 +1853,6 @@ void update_callback(float ms) {
             if (fps_smoothed <= 0.0f) fps_smoothed = inst;
             else fps_smoothed = fps_smoothed * 0.90f + inst * 0.10f;
             state->hud_fps = fps_smoothed;
-        }
-    }
-
-    if (g_record_notice_ms > 0.0f) {
-        g_record_notice_ms = std::max(0.0f, g_record_notice_ms - ms);
-        if (g_record_notice_ms <= 0.0f) {
-            g_record_notice.clear();
         }
     }
 
@@ -2124,8 +1872,6 @@ void update_callback(float ms) {
     static bool prev_m = false;
     static bool prev_minus = false;
     static bool prev_plus = false;
-    static bool prev_f5 = false;
-    static bool prev_v = false;
 
     // Κατάσταση ήχων για countdown / τέλος / νικητή.
     static bool played_countdown[4] = {false, false, false, false}; // indices 1..3
@@ -2144,9 +1890,6 @@ void update_callback(float ms) {
 
     // Καθαρό quit, για να μην μείνει η διεργασία να τρέχει 
     if (graphics::getKeyState(graphics::SCANCODE_ESCAPE) || graphics::getKeyState(graphics::SCANCODE_Q)) {
-        if (g_recording) {
-            stopLiveRecording(false);
-        }
         graphics::stopMessageLoop();
         return;
     }
@@ -2200,21 +1943,11 @@ void update_callback(float ms) {
     }
     const bool cur_minus = graphics::getKeyState(graphics::SCANCODE_MINUS) || graphics::getKeyState(graphics::SCANCODE_KP_MINUS);
     const bool cur_plus = graphics::getKeyState(graphics::SCANCODE_EQUALS) || graphics::getKeyState(graphics::SCANCODE_KP_PLUS);
-    const bool cur_f5 = graphics::getKeyState(graphics::SCANCODE_F5);
-    // Fallback key for laptops/OS setups where function keys are intercepted.
-    const bool cur_v = graphics::getKeyState(graphics::SCANCODE_V);
     if (cur_minus && !prev_minus) {
         state->tick_delay_ms = std::min(2000, state->tick_delay_ms + 50);
     }
     if (cur_plus && !prev_plus) {
         state->tick_delay_ms = std::max(10, state->tick_delay_ms - 50);
-    }
-    if ((cur_f5 || cur_v) && !(prev_f5 || prev_v)) {
-        if (!g_recording) {
-            (void)startLiveRecording();
-        } else {
-            stopLiveRecording();
-        }
     }
 
     prev_space = cur_space;
@@ -2224,8 +1957,6 @@ void update_callback(float ms) {
     prev_c = cur_c;
     prev_minus = cur_minus;
     prev_plus = cur_plus;
-    prev_f5 = cur_f5;
-    prev_v = cur_v;
 
     // Setup / start του match.
     const bool cur_enter = graphics::getKeyState(graphics::SCANCODE_RETURN) || graphics::getKeyState(graphics::SCANCODE_RETURN2);

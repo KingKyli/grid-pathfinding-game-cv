@@ -115,7 +115,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\run_sim_sgg.ps1 -Reconfigure
 | CPU Agent | Autopilot με 3 επίπεδα δυσκολίας (Easy / Normal / Hard) |
 | HUD Metrics | FPS, nodes expanded, path length, search time, match timer |
 | Playback controls | Play/Pause, Step-by-step (N), Speed (-/+) |
-| Map Selector | `M` εναλλάσσει μεταξύ large / huge / arena_rings / symmetric_lanes / zigzag_channels maps live |
+| Map Selector | `M` εναλλάσσει μεταξύ large / huge / arena_rings / symmetric_lanes / zigzag_channels / pacman_classic / pacman_crossroads maps live |
 | In-app Map Editor | LMB = ζωγράφισε τοίχο, RMB = σβήσε τοίχο (στο setup mode) |
 | Pause freezes timer | Ο χρόνος match σταματά όταν το game είναι paused |
 | N-step mode | Παίκτες κινούνται, ο CPU agent παραλείπεται |
@@ -278,7 +278,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\run_sim_sgg.ps1 -Reconfigure
 | CPU Agent | Autopilot with 3 difficulty levels (Easy / Normal / Hard) |
 | HUD Metrics | FPS, nodes expanded, path length, search time, match timer |
 | Playback controls | Play/Pause, Step-by-step (N), Speed (-/+) |
-| Map Selector | M cycles between large / huge / arena_rings / symmetric_lanes / zigzag_channels maps live |
+| Map Selector | M cycles between large / huge / arena_rings / symmetric_lanes / zigzag_channels / pacman_classic / pacman_crossroads maps live |
 | In-app Map Editor | LMB draws a wall, RMB erases a wall (setup mode) |
 | Pause freezes timer | Match timer is frozen while paused |
 | N-step mode | Players move, CPU agent is skipped |
